@@ -1,0 +1,413 @@
+package dokter
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"teka-api/internal/models"
+	"teka-api/pkg/helper"
+	"teka-api/pkg/middleware"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/minio/minio-go/v7"
+)
+
+type Handler struct {
+	Service     Service
+	MinioClient *minio.Client
+	Hub         *OrderHub
+}
+
+func NewHandler(service Service, minioClient *minio.Client, hub *OrderHub) *Handler {
+	return &Handler{
+		Service:     service,
+		MinioClient: minioClient,
+		Hub:         hub,
+	}
+}
+
+// START REGISTER MITRA
+func (h *Handler) RegisterMitra(c *fiber.Ctx) error {
+	// Ambil userID & nama dari JWT
+	userIDVal := c.Locals("user_id")
+	if userIDVal == nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	userID := int(userIDVal.(uint))
+
+	userName := "unknown"
+	if nameVal := c.Locals("nama"); nameVal != nil {
+		userName = nameVal.(string)
+	}
+
+	// Parse request body
+	req := new(models.CreateMitraRequest)
+	if err := c.BodyParser(req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	// Folder user di MinIO: user-<id>-<nama>
+	userDir := fmt.Sprintf("user-%d-%s", userID, helper.SanitizeFileName(userName))
+
+	// Map untuk menyimpan semua file yang di-upload
+	files := make(map[string]string)
+
+	// Daftar field file yang diharapkan
+	fileFields := []string{"foto", "foto_ktp", "foto_selfie_ktp", "str", "sip"}
+
+	bucket := os.Getenv("S3_BUCKET")
+
+	for _, field := range fileFields {
+		if fileHeader, err := c.FormFile(field); err == nil && fileHeader != nil {
+			path, err := helper.UploadFileToMinio(
+				h.MinioClient,
+				bucket, // ✅ BENAR
+				userDir,
+				fileHeader,
+			)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"error": fmt.Sprintf("failed to upload %s: %v", field, err),
+				})
+			}
+			files[field] = path
+		}
+	}
+
+	// Simpan data ke DB via service
+	if err := h.Service.RegisterMitra(userID, *req, files); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"message": "Mitra registration submitted"})
+}
+
+// START MITRA PROFILE
+func (h *Handler) GetMyMitraProfile(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"message": "Get My Mitra Profile belum diimplementasi"})
+}
+
+// END MITRA PROFILE
+
+// START CUSTOMER SEARCH DOKTER
+func (h *Handler) SearchDoctor(c *fiber.Ctx) error {
+	userIDVal := c.Locals("user_id")
+	if userIDVal == nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	customerID := int64(userIDVal.(uint))
+
+	var req SearchDoctorRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+
+	doctors, requestID, err := h.Service.SearchDoctor(
+		c.Context(),
+		customerID,
+		req,
+	)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"request_id": requestID,
+		"doctors":    doctors,
+	})
+}
+
+// END CUSTOMER SEARCH DOKTER
+
+// -------------------------------
+// CANCEL ORDERAN
+// -------------------------------
+func (h *Handler) CancelOrder(c *fiber.Ctx) error {
+	requestID, err := c.ParamsInt("id")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request id"})
+	}
+
+	userIDVal := c.Locals("user_id")
+	if userIDVal == nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	customerID := int64(userIDVal.(uint))
+
+	if err := h.Service.CancelOrder(c.Context(), int64(requestID), customerID); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"message": "order cancelled successfully"})
+}
+
+// START DETAIL CUSTOMER DI MITRA
+func (h *Handler) GetCurrentOffer(c *fiber.Ctx) error {
+
+	mitraID, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "unauthorized",
+		})
+	}
+
+	offer, err := h.Service.GetCurrentOffer(
+		c.Context(),
+		int64(mitraID),
+	)
+
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "no active offer",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": offer,
+	})
+}
+
+// START DOKTER ACCEPT
+func (h *Handler) AcceptOffer(c *fiber.Ctx) error {
+	offerID, err := c.ParamsInt("id")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid offer id"})
+	}
+
+	mitraID, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+
+	if err := h.Service.AcceptOffer(c.Context(), int64(offerID), int64(mitraID)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"message": "offer accepted"})
+}
+
+// START DETAIL DOKTER DI CUSTOMER SETELAH SERVICE ORDER
+func (h *Handler) GetMyServiceOrders(c *fiber.Ctx) error {
+	userIDVal := c.Locals("user_id")
+	if userIDVal == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+
+	customerID := int64(userIDVal.(uint))
+
+	orders, err := h.Service.GetCustomerServiceOrders(c.Context(), customerID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if len(orders) == 0 {
+		return c.Status(404).JSON(fiber.Map{"message": "no service orders found"})
+	}
+
+	return c.JSON(fiber.Map{"orders": orders})
+}
+
+// AKTIF ORDER CUSTOMER
+func (h *Handler) GetCustomerCurrentOrder(c *fiber.Ctx) error {
+	customerID, _ := middleware.UserID(c)
+
+	order, err := h.Service.GetCurrentOrder(
+		c.Context(),
+		int64(customerID),
+		false,
+	)
+
+	if err != nil {
+		return c.JSON(fiber.Map{"data": nil})
+	}
+
+	return c.JSON(fiber.Map{"data": order})
+}
+
+// AKTIF ORDER MITRA
+func (h *Handler) GetMitraCurrentOrder(c *fiber.Ctx) error {
+	mitraID, _ := middleware.UserID(c)
+
+	order, err := h.Service.GetCurrentOrder(
+		c.Context(),
+		int64(mitraID),
+		true,
+	)
+
+	if err != nil {
+		return c.JSON(fiber.Map{"data": nil})
+	}
+
+	return c.JSON(fiber.Map{"data": order})
+}
+
+// CompleteService dari dokter selesai service
+func (h *Handler) CompleteOrder(c *fiber.Ctx) error {
+	orderID, err := c.ParamsInt("id")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid order id"})
+	}
+
+	mitraIDVal := c.Locals("user_id")
+	if mitraIDVal == nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDVal.(uint))
+
+	var req models.CompleteOrderRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+	req.OrderID = int64(orderID)
+
+	// 📂 folder MinIO per order
+	userDir := fmt.Sprintf("orders/%d", orderID)
+
+	// ambil multiple photos
+	form, err := c.MultipartForm()
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid multipart"})
+	}
+
+	var photoPaths []string
+	if files := form.File["photos"]; len(files) > 0 {
+		for _, file := range files {
+			path, err := helper.UploadFileToMinio(
+				h.MinioClient,
+				"uploads",
+				userDir,
+				file,
+			)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"error": "upload photo failed",
+				})
+			}
+			photoPaths = append(photoPaths, path)
+		}
+	}
+
+	req.Attachments = photoPaths
+
+	if err := h.Service.CompleteOrder(
+		c.Context(),
+		mitraID,
+		&req,
+	); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "order completed successfully",
+	})
+}
+
+// CompleteOrderUser (Customer completing the order)
+func (h *Handler) CompleteOrderUser(c *fiber.Ctx) error {
+	orderID, err := c.ParamsInt("id")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid order id"})
+	}
+
+	userIDVal := c.Locals("user_id")
+	if userIDVal == nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	customerID := int64(userIDVal.(uint))
+
+	var req models.CompleteOrderRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+	req.OrderID = int64(orderID)
+
+	// Note: Customer completion usually doesn't involve uploading photos like Mitra does.
+	// So we skip the multipart form parsing here.
+
+	if err := h.Service.CompleteOrderUser(
+		c.Context(),
+		customerID,
+		&req,
+	); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "order completed successfully",
+	})
+}
+
+// RateDoctor: customer beri rating
+func (h *Handler) RateDoctor(c *fiber.Ctx) error {
+	var req models.RatingRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid payload"})
+	}
+
+	customerIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	customerID := int64(customerIDCtx)
+
+	if err := h.Service.RateDoctor(c.Context(), customerID, req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Rating submitted successfully",
+	})
+}
+
+func (c *Handler) GetVoucherHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := strconv.ParseInt(r.Header.Get("X-User-ID"), 10, 64) // contoh ambil dari JWT
+	vouchers, err := c.Service.GetActiveVoucher(r.Context(), userID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(vouchers)
+}
+
+func (h *Handler) UpdateServiceOrderStatus(c *fiber.Ctx) error {
+	orderID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid order id"})
+	}
+
+	var body struct {
+		StatusID int16 `json:"status_id"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+
+	// update DB
+	if err := h.Service.UpdateServiceOrderStatus(
+		c.Context(),
+		orderID,
+		body.StatusID,
+	); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// 🔥🔥🔥 INI YANG SELAMA INI HILANG 🔥🔥🔥
+	log.Printf("Broadcasting status update: order=%d status=%d", orderID, body.StatusID)
+
+	h.Hub.Broadcast(orderID, fiber.Map{
+		"event":     "status_updated",
+		"order_id":  orderID,
+		"status_id": body.StatusID,
+		"ts":        time.Now(),
+	})
+
+	return c.JSON(fiber.Map{
+		"message": "status updated",
+	})
+}

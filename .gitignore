@@ -1,0 +1,59 @@
+# ======================
+# Environment variables
+# ======================
+.env
+.env.*
+!.env.example
+
+# ======================
+# OS / Editor
+# ======================
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ======================
+# Go build output
+# ======================
+bin/
+build/
+dist/
+*.exe
+*.out
+*.test
+*.prof
+
+# ======================
+# Temporary / runtime
+# ======================
+tmp/
+tmp/*
+air.tmp
+
+# ======================
+# Logs
+# ======================
+*.log
+
+# ======================
+# Uploads / generated files
+# ======================
+uploads/
+
+# ======================
+# Dependency cache
+# ======================
+vendor/
+
+# ======================
+# Test coverage
+# ======================
+coverage.out
+coverage/
+
+# ======================
+# Database / local files
+# ======================
+*.db
+*.sqlite

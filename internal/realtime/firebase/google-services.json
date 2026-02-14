@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "519486245965",
+    "project_id": "teka-pro",
+    "storage_bucket": "teka-pro.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:519486245965:android:900f55e4681217263fe004",
+        "android_client_info": {
+          "package_name": "id.tekapro.indonesia"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAGfrZ9oNsOAZ8u-VmdAh7ScFdvE5O5Tm0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

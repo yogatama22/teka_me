@@ -1,0 +1,1075 @@
+package dokter
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"teka-api/internal/models"
+	"time"
+
+	"gorm.io/gorm"
+)
+
+type Repository struct {
+	DB *gorm.DB
+}
+
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{DB: db}
+}
+
+// GLOBAL PARAMETER
+// GetGlobalParameter fetch parameter by code
+func (r *Repository) GetGlobalParameter(ctx context.Context, code string) (string, error) {
+	var value string
+	query := `SELECT parameter_value FROM global_parameter WHERE parameter_code = $1 AND is_active =  'true' LIMIT 1`
+	err := r.DB.Raw(query, code).Scan(&value).Error
+	if err != nil {
+		return "", fmt.Errorf("failed to get global parameter %s: %w", code, err)
+	}
+	return value, nil
+}
+
+// GetMaxRadius khusus untuk MAX_RADIUS
+func (r *Repository) GetMaxRadius(ctx context.Context) (float64, error) {
+	val, err := r.GetGlobalParameter(ctx, "MAX_RADIUS")
+	if err != nil {
+		return 0, err
+	}
+
+	radius, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid MAX_RADIUS value: %w", err)
+	}
+	return radius, nil
+}
+
+// START INSERT MITRA
+func (r *Repository) CreateUserMitra(userID int, jobCatID int, jobSubCatID *int) error {
+
+	query := `
+		INSERT INTO user_mitra
+			(user_id, job_category_id, job_sub_category_id)
+		VALUES
+			($1, $2, $3)
+		ON CONFLICT (user_id) DO UPDATE
+		SET
+			job_category_id     = EXCLUDED.job_category_id,
+			job_sub_category_id = EXCLUDED.job_sub_category_id;
+	`
+
+	return r.DB.Exec(query, userID, jobCatID, jobSubCatID).Error
+}
+
+// END INSERT MITRA
+
+// START INSERT MITRA DETAIL
+func (r *Repository) CreateMitraDetail(userID int, jobCatID int, jobSubCatID *int, lat, lng float64) error {
+	query := `
+		INSERT INTO mitra_details
+			(user_id, job_category_id, job_sub_category_id, latitude, longitude, created_at, updated_at)
+		VALUES
+			($1, $2, $3, $4, $5, NOW(), NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET
+			job_category_id     = EXCLUDED.job_category_id,
+			job_sub_category_id = EXCLUDED.job_sub_category_id,
+			latitude            = EXCLUDED.latitude,
+			longitude           = EXCLUDED.longitude,
+			updated_at          = NOW();
+	`
+
+	return r.DB.Exec(query, userID, jobCatID, jobSubCatID, lat, lng).Error
+}
+
+// END INSERT MITRA DETAIL
+
+// START INSERT USER ROLES
+func (r *Repository) CreateUserRole(userID, roleID int, active bool) error {
+	query := `
+        INSERT INTO user_roles (user_id, role_id, active, created_at, updated_at)
+        VALUES (?, ?, ?, NOW(), NOW())
+        ON CONFLICT (user_id, role_id) DO NOTHING;
+    `
+	return r.DB.Exec(query, userID, roleID, active).Error
+}
+
+// END INSERT USER ROLES
+
+// START INSERT DOKUMEN
+func (r *Repository) CreateDocument(userID int, docType, url string) error {
+	query := `
+        INSERT INTO mitra_documents (user_id, doc_type, file_url, created_at, updated_at)
+        VALUES (?,?,?,NOW(),NOW());
+    `
+	return r.DB.Exec(query, userID, docType, url).Error
+}
+
+// END INSERT DOKUMEN
+
+// START CARI DOKTER DALAM RADIUS
+func (r *Repository) SearchDoctors(
+	ctx context.Context,
+	jobCategoryID int64,
+	jobSubCategoryID int64,
+	lat, lng float64,
+) ([]models.DoctorSearchResult, error) {
+
+	var doctors []models.DoctorSearchResult
+
+	maxRadius, err := r.GetMaxRadius(ctx)
+	if err != nil {
+		maxRadius = 10
+	}
+
+	query := `
+	SELECT *
+FROM (
+	SELECT
+		u.id AS mitra_id,
+		u.nama AS nama,
+		md.latitude,
+		md.longitude,
+		0 AS avg_rating,
+		0 AS total_review,
+		(
+			6371 * acos(
+				cos(radians(?)) *
+				cos(radians(md.latitude)) *
+				cos(radians(md.longitude) - radians(?)) +
+				sin(radians(?)) *
+				sin(radians(md.latitude))
+			)
+		) AS distance_km
+	FROM mitra_details md
+	JOIN users u ON u.id = md.user_id
+	WHERE md.job_category_id = ?
+	  AND (? = 0 OR md.job_sub_category_id = ?)
+	  AND md.availability_status_id = 2
+
+	  AND NOT EXISTS (
+		  SELECT 1
+		  FROM request_mitra_offers rmo
+		  WHERE rmo.mitra_id = u.id
+		    AND rmo.status_id = 1
+	  )
+
+	  AND NOT EXISTS (
+		  SELECT 1
+		  FROM service_orders so
+		  WHERE so.mitra_id = u.id
+		    AND so.status_id IN (1,2,3)
+	  )
+) t
+WHERE t.distance_km <= ?
+ORDER BY t.distance_km ASC
+
+`
+
+	err = r.DB.WithContext(ctx).
+		Raw(
+			query,
+			lat, lng, lat,
+			jobCategoryID,
+			jobSubCategoryID,
+			jobSubCategoryID,
+			maxRadius,
+		).
+		Scan(&doctors).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return doctors, nil
+}
+
+// END CARI DOKTER DALAM RADIUS
+
+// START CUSTOMER REQUEST
+func (r *Repository) CreateCustomerRequest(
+	ctx context.Context,
+	req models.CustomerRequest,
+) (int64, error) {
+
+	var id int64
+
+	err := r.DB.WithContext(ctx).
+		Raw(`
+			INSERT INTO customer_requests (
+				customer_id,
+				job_category_id,
+				job_sub_category_id,
+				keluhan,
+				latitude,
+				longitude,
+				radius,
+				price,
+				voucher_id,
+				status_id
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?)
+			RETURNING id
+		`,
+			req.CustomerID,
+			req.JobCategoryID,
+			req.JobSubCategoryID,
+			req.Keluhan,
+			req.Latitude,
+			req.Longitude,
+			req.Radius,
+			req.Price,
+			req.VoucherID,
+			1,
+		).
+		Scan(&id).Error
+
+	return id, err
+}
+
+// Ambil customer request
+func (r *Repository) GetCustomerRequest(ctx context.Context, requestID int64) (models.CustomerRequest, error) {
+	var req models.CustomerRequest
+	err := r.DB.WithContext(ctx).
+		Raw(`SELECT * FROM customer_requests WHERE id = ?`, requestID).
+		Scan(&req).Error
+	return req, err
+}
+
+// -------------------------------
+// CANCEL ORDERAN
+// -------------------------------
+func (r *Repository) CancelCustomerRequest(ctx context.Context, requestID int64) error {
+	tx := r.DB.WithContext(ctx).Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Update customer request → hanya yang belum diterima mitra (status_id != 3 / accepted)
+	if err := tx.Exec(`
+        UPDATE customer_requests
+        SET status_id = ?, updated_at = NOW()
+        WHERE id = ? AND status_id NOT IN (3)  -- 3 = accepted/matched
+    `, 4, requestID).Error; err != nil { // 4 = cancelled
+		tx.Rollback()
+		return err
+	}
+
+	// 2. Update semua offer yang masih waiting (status_id = 1) menjadi cancelled (status_id = 5)
+	if err := tx.Exec(`
+        UPDATE request_mitra_offers
+        SET status_id = ?, responded_at = NOW()
+        WHERE request_id = ? AND status_id = 1
+    `, 5, requestID).Error; err != nil { // 5 = cancelled sistem
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit().Error
+}
+
+// START DETAIL CUSTOMER DI DOKTER
+func (r *Repository) GetCurrentOfferForMitra(
+	ctx context.Context,
+	mitraID int64,
+) (*models.CurrentOffer, error) {
+
+	var offer models.CurrentOffer
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT
+			o.id           AS offer_id,
+			o.request_id,
+			r.customer_id,
+			r.keluhan,
+			r.latitude,
+			r.longitude,
+			r.price,
+			r.created_at,
+			u.nama         AS customer_name,
+			u.phone        AS customer_phone
+		FROM request_mitra_offers o
+		JOIN customer_requests r ON r.id = o.request_id
+		JOIN users u ON u.id = r.customer_id
+		WHERE o.mitra_id = ?
+		  AND o.status_id = 1
+		ORDER BY o.sent_at
+		
+	`, mitraID).Scan(&offer).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	if offer.OfferID == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	return &offer, nil
+}
+
+// END DETAIL CUSTOMER DI DOKTER
+
+// START CREATE OFFER
+func (r *Repository) CreateOffers(
+	ctx context.Context,
+	requestID int64,
+	doctors []models.DoctorSearchResult,
+) error {
+
+	tx := r.DB.WithContext(ctx).Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	now := time.Now()
+
+	for i, d := range doctors {
+		var (
+			statusID int16
+			sentAt   *time.Time
+		)
+
+		if i == 0 {
+			// offer pertama langsung dikirim
+			statusID = 1 // waiting
+			sentAt = &now
+		} else {
+			// sisanya ANTRI
+			statusID = 6 // pending
+			sentAt = nil
+		}
+
+		if err := tx.Exec(`
+			INSERT INTO request_mitra_offers (
+				request_id,
+				mitra_id,
+				sequence,
+				status_id,
+				sent_at
+			)
+			VALUES (?, ?, ?, ?, ?)
+		`,
+			requestID,
+			d.MitraID,
+			i+1,
+			statusID,
+			sentAt,
+		).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+// END CREATE OFFER
+
+// GET OFFER
+func (r *Repository) GetOfferForAccept(
+	ctx context.Context,
+	offerID int64,
+	mitraID int64,
+) (*models.OfferAcceptData, error) {
+
+	var o models.OfferAcceptData
+
+	err := r.DB.WithContext(ctx).Raw(`
+	SELECT
+		o.id AS offer_id,
+		o.request_id,
+		o.mitra_id,
+
+		r.customer_id,
+		r.keluhan,
+		r.job_category_id,
+		r.job_sub_category_id,
+
+		c.nama  AS customer_name,
+		c.phone AS customer_phone,
+
+		m.nama  AS mitra_name,
+		m.phone AS mitra_phone,
+
+		r.latitude  AS customer_latitude,
+		r.longitude AS customer_longitude,
+
+		md.latitude AS mitra_latitude,
+		md.longitude AS mitra_longitude,
+
+		r.price,
+		r.voucher_id
+	FROM request_mitra_offers o
+	JOIN customer_requests r ON r.id = o.request_id
+	JOIN users c ON c.id = r.customer_id
+	JOIN users m ON m.id = o.mitra_id
+	JOIN mitra_details md ON md.user_id = o.mitra_id
+	WHERE o.id = ?
+	  AND o.mitra_id = ?
+	  AND o.status_id = 1
+`, offerID, mitraID).Scan(&o).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	if o.OfferID == 0 {
+		return nil, errors.New("offer not valid")
+	}
+
+	return &o, nil
+}
+
+// ACCEPT OFFER
+func (r *Repository) AcceptOfferAndCreateOrder(
+	ctx context.Context,
+	o *models.OfferAcceptData,
+) error {
+
+	tx := r.DB.WithContext(ctx).Begin()
+	now := time.Now()
+
+	// 1️⃣ Accept offer
+	res := tx.Exec(`
+		UPDATE request_mitra_offers
+		SET status_id = 2,
+		    responded_at = ?
+		WHERE id = ? AND status_id = 1
+	`, now, o.OfferID)
+	if res.RowsAffected == 0 {
+		tx.Rollback()
+		return errors.New("offer already processed")
+	}
+
+	// 2️⃣ Cancel other offers
+	if err := tx.Exec(`
+		UPDATE request_mitra_offers
+		SET status_id = 5
+		WHERE request_id = ? AND id != ? AND status_id IN (1,6)
+	`, o.RequestID, o.OfferID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 3️⃣ Update customer request
+	if err := tx.Exec(`
+		UPDATE customer_requests
+		SET status_id = 2,
+		    matched_mitra_id = ?,
+		    matched_at = ?
+		WHERE id = ? AND status_id = 1
+	`, o.MitraID, now, o.RequestID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 4️⃣ INSERT service_order + ambil id & created_at
+	var orderID int64
+	var createdAt time.Time
+
+	if err := tx.Raw(`
+		INSERT INTO service_orders (
+			request_id,
+			customer_id,
+			mitra_id,
+
+			customer_name,
+			customer_phone,
+			mitra_name,
+			mitra_phone,
+
+			job_category_id,
+			job_sub_category_id,
+			keluhan,
+
+			customer_latitude,
+			customer_longitude,
+			mitra_latitude,
+			mitra_longitude,
+
+			price,
+			voucher_id,
+
+			status_id,
+			start_time,
+			accepted_at,
+			created_at,
+			updated_at
+		)
+		VALUES (
+			?, ?, ?,
+			?, ?, ?, ?,
+			?, ?, ?,
+			?, ?, ?, ?,
+			?, ?,
+			1,
+			?, ?, ?, ?
+		)
+		RETURNING id, created_at
+	`,
+		o.RequestID,
+		o.CustomerID,
+		o.MitraID,
+
+		o.CustomerName,
+		o.CustomerPhone,
+		o.MitraName,
+		o.MitraPhone,
+
+		o.JobCategoryID,
+		o.JobSubCategoryID,
+		o.Keluhan,
+
+		o.CustomerLatitude,
+		o.CustomerLongitude,
+		o.MitraLatitude,
+		o.MitraLongitude,
+
+		o.Price,
+		o.VoucherID,
+
+		now,
+		now,
+		now,
+		now,
+	).Row().Scan(&orderID, &createdAt); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if err := tx.Exec(`
+	UPDATE service_orders
+SET order_number = format(
+	'DOK-%s-%s',
+	to_char(created_at, 'YYYYMMDDHH24MISSMS'),
+	to_char(nextval('myschema.service_order_seq'), 'FM000000')
+)
+WHERE id = ?;
+`, orderID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit().Error
+}
+
+// AKTIF ORDER
+func (r *Repository) GetActiveServiceOrder(
+	ctx context.Context,
+	userID int64,
+	isMitra bool,
+) (*models.ActiveServiceOrder, error) {
+
+	where := "so.customer_id = ?"
+	if isMitra {
+		where = "so.mitra_id = ?"
+	}
+
+	var row activeServiceOrderRow
+
+	err := r.DB.WithContext(ctx).Raw(`
+	SELECT
+		so.id,
+		so.start_time,
+		so.status_id,
+		so.order_number,
+		sos.code AS status_name,
+		so.price,
+		so.keluhan,
+		so.customer_id,
+		so.customer_name  AS customer_nama,
+		so.customer_phone AS customer_phone,
+		so.mitra_id,
+		so.mitra_name     AS mitra_nama,
+		so.mitra_phone    AS mitra_phone,
+		so.customer_latitude  AS customer_lat,
+		so.customer_longitude AS customer_lng,
+		so.mitra_latitude     AS mitra_lat,
+		so.mitra_longitude    AS mitra_lng
+	FROM service_orders so
+	JOIN service_order_statuses sos 
+		ON sos.id = so.status_id
+	WHERE `+where+`
+	  AND so.status_id <> 5
+	LIMIT 1
+`, userID).Scan(&row).Error
+
+	if err != nil || row.ID == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	return mapActiveServiceOrder(row), nil
+}
+
+// COMPLETE ORDER
+func (r *Repository) CompleteOrder(
+	ctx context.Context,
+	orderID int64,
+	mitraID int64,
+	data CompleteOrderTxData,
+) error {
+
+	tx := r.DB.WithContext(ctx).Begin()
+	now := time.Now()
+
+	res := tx.Exec(`
+		UPDATE service_orders
+		SET status_id = 4,          -- COMPLETED
+		    end_time = ?,
+		    updated_at = ?
+		WHERE id = ?
+		  AND mitra_id = ?
+		  AND status_id = 3         -- ARRIVED
+	`, now, now, orderID, mitraID)
+
+	if res.Error != nil {
+		tx.Rollback()
+		return res.Error
+	}
+
+	if res.RowsAffected == 0 {
+		tx.Rollback()
+		return errors.New("order not valid or already completed")
+	}
+
+	// 2️⃣ update service order
+	if err := tx.Exec(`
+		UPDATE service_orders
+		SET status_id = 3,
+		    end_time = ?,
+		    updated_at = ?
+		WHERE id = ?
+	`, now, now, orderID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 3️⃣ transaksi + NOTE
+	// 3️⃣ insert transaction snapshot dengan note, customer/mitra info, voucher
+	if err := tx.Exec(`
+	INSERT INTO order_transactions (
+		order_id,
+		customer_id,
+		customer_name,
+		mitra_id,
+		mitra_name,
+		amount,
+		subtotal,
+		discount,
+		platform_fee,
+		mitra_income,
+		payment_method,
+		voucher_id,
+		note,
+		status_id,
+		paid_at,
+		created_at,
+		updated_at
+	)
+	SELECT
+		so.id,
+		so.customer_id,
+		so.customer_name,
+		so.mitra_id,
+		so.mitra_name,
+		?, ?, ?, ?, ?, ?, so.voucher_id, ?, 2, ?, ?, ?
+	FROM service_orders so
+	WHERE so.id = ?
+`,
+		data.Amount,
+		data.Subtotal,
+		data.Discount,
+		data.PlatformFee,
+		data.MitraIncome,
+		data.PaymentMethod,
+		data.Note, // note dokter
+		now,
+		now,
+		now,
+		orderID,
+	).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 4️⃣ foto bukti
+	for _, url := range data.Attachments {
+		if err := tx.Exec(`
+			INSERT INTO order_attachments (order_id, type, url)
+			VALUES (?, 'photo', ?)
+		`, orderID, url).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+// CompleteOrderCustomer (Complete by Customer)
+func (r *Repository) CompleteOrderCustomer(
+	ctx context.Context,
+	orderID int64,
+	customerID int64,
+) error {
+	// Hanya update status service_order menjadi 6
+	// Status sebelumnya harus 4 (Completed by Doctor) atau bisa juga still in progress jika flow mengizinkan
+	// Sesuai request: "di user hanya update status menjadi 6 di service order"
+
+	query := `
+		UPDATE service_orders
+		SET status_id = 6,          -- COMPLETED BY USER / FINISHED
+		    updated_at = NOW()
+		WHERE id = ?
+		  AND customer_id = ?
+		  AND status_id IN (2, 3, 4)   -- ACCEPTED, ARRIVED, or COMPLETED_BY_DOCTOR
+	`
+	res := r.DB.WithContext(ctx).Exec(query, orderID, customerID)
+
+	if res.Error != nil {
+		return res.Error
+	}
+
+	if res.RowsAffected == 0 {
+		return errors.New("order not found or not authorized")
+	}
+
+	return nil
+}
+
+func (r *Repository) RejectOffer(
+	ctx context.Context,
+	offerID int64,
+) error {
+
+	tx := r.DB.WithContext(ctx).Begin()
+
+	// 1. reject offer sekarang
+	if err := tx.Exec(`
+		UPDATE request_mitra_offers
+		SET status = 'rejected',
+		    status_id = 3,
+		    responded_at = now()
+		WHERE id = ?
+		  AND status = 'waiting'
+	`, offerID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 2. aktifkan offer berikutnya
+	if err := tx.Exec(`
+		UPDATE request_mitra_offers
+		SET status = 'waiting',
+		    status_id = 1,
+		    sent_at = now()
+		WHERE id = (
+			SELECT id FROM request_mitra_offers
+			WHERE request_id = (
+				SELECT request_id FROM request_mitra_offers WHERE id = ?
+			)
+			AND status = 'cancelled'
+			ORDER BY sequence
+			LIMIT 1
+		)
+	`, offerID).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit().Error
+}
+
+func (r *Repository) GetExpiredOffers(
+	ctx context.Context,
+	timeoutSeconds int,
+) ([]models.ExpiredOffer, error) {
+
+	var offers []models.ExpiredOffer
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT rmo.id, rmo.request_id, rmo.sequence
+		FROM request_mitra_offers rmo
+		WHERE rmo.status_id = 1
+		  AND rmo.sent_at IS NOT NULL
+		  AND rmo.sent_at <= clock_timestamp() - (? * INTERVAL '1 second')
+		  AND rmo.sequence = (
+			  SELECT MIN(sequence)
+			  FROM request_mitra_offers
+			  WHERE request_id = rmo.request_id
+				AND status_id = 1
+		  )
+	`, timeoutSeconds).Scan(&offers).Error
+
+	return offers, err
+}
+
+func (r *Repository) TimeoutAndMoveNext(
+	ctx context.Context,
+	requestID int64,
+	sequence int,
+) error {
+
+	tx := r.DB.WithContext(ctx).Begin()
+
+	// 1. timeout current offer
+	if err := tx.Exec(`
+		UPDATE request_mitra_offers
+		SET status_id = 4,
+		    responded_at = NOW()
+		WHERE request_id = ?
+		  AND sequence = ?
+		  AND status_id = 1
+	`, requestID, sequence).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 2. activate next offer (ONLY ONE)
+	res := tx.Exec(`
+		UPDATE request_mitra_offers
+		SET status_id = 1,
+		    sent_at = NOW()
+		WHERE request_id = ?
+		  AND sequence = ?
+		  AND status_id = 5
+	`, requestID, sequence+1)
+
+	if res.Error != nil {
+		tx.Rollback()
+		return res.Error
+	}
+
+	return tx.Commit().Error
+}
+
+func (r *Repository) GetServiceForRating(
+	ctx context.Context,
+	serviceOrderID, customerID int64,
+) (int64, error) {
+
+	var mitraID int64
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT mitra_id
+		FROM service_orders
+		WHERE id = ?
+		  AND customer_id = ?
+		  AND status_id = 6
+	`, serviceOrderID, customerID).Scan(&mitraID).Error
+
+	return mitraID, err
+}
+
+func (r *Repository) InsertRating(
+	ctx context.Context,
+	serviceOrderID, mitraID, customerID int64,
+	rating int,
+	review string,
+) error {
+
+	return r.DB.WithContext(ctx).Exec(`
+		INSERT INTO mitra_ratings
+			(service_order_id, mitra_id, customer_id, rating, review)
+		VALUES (?, ?, ?, ?, ?)
+	`,
+		serviceOrderID,
+		mitraID,
+		customerID,
+		rating,
+		review,
+	).Error
+}
+
+// Ambil offer waiting untuk dokter tertentu (urut sequence)
+func (r *Repository) GetNextOfferForMitra(ctx context.Context, mitraID int64) (models.MitraOffer, error) {
+	var offer models.MitraOffer
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT id, request_id, mitra_id, sequence, status
+		FROM request_mitra_offers
+		WHERE mitra_id = ? AND status = 'waiting'
+		ORDER BY sequence ASC
+		LIMIT 1
+	`, mitraID).Scan(&offer).Error
+
+	fmt.Printf("Repo GetNextOfferForMitra result: %+v\n", offer)
+	return offer, err
+}
+
+// close
+func (r *Repository) CompleteServiceOrder(
+	ctx context.Context,
+	serviceOrderID, mitraID int64,
+) error {
+
+	res := r.DB.WithContext(ctx).Exec(`
+		UPDATE service_orders
+		SET
+			service_status = 'completed',
+			end_time = NOW()
+		WHERE
+			id = ?
+			AND mitra_id = ?
+			AND service_status = 'ongoing'
+	`, serviceOrderID, mitraID)
+
+	if res.RowsAffected == 0 {
+		return errors.New("service order not found or already completed")
+	}
+
+	return res.Error
+}
+
+func (r *Repository) GetCustomerServiceOrders(
+	ctx context.Context,
+	customerID int64,
+) ([]models.CustomerServiceOrder, error) {
+
+	var orders []models.CustomerServiceOrder
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT
+			so.id,
+			so.service_status AS status,
+			so.start_time,
+			so.end_time,
+			so.price,
+
+			u.id AS mitra_id,
+			u.nama AS mitra_name,
+
+			cr.latitude,
+			cr.longitude
+		FROM service_orders so
+		JOIN users u ON u.id = so.mitra_id
+		JOIN customer_requests cr ON cr.id = so.request_id
+		WHERE so.customer_id = ?
+		ORDER BY so.created_at DESC
+	`, customerID).Scan(&orders).Error
+
+	return orders, err
+}
+
+// Ambil voucher aktif customer
+func (r *Repository) GetActiveVoucher(ctx context.Context, userID int64) ([]models.Voucher, error) {
+	var vouchers []models.Voucher
+
+	query := `
+	SELECT v.id, v.code, v.description
+	FROM dev.voucher_user vu
+	JOIN dev.vouchers v ON v.id = vu.voucher_id
+	WHERE vu.user_id = ?
+	  AND vu.used_at IS NULL
+	  AND v.is_active = TRUE
+	  AND v.start_date <= CURRENT_DATE
+	  AND v.end_date >= CURRENT_DATE
+	`
+
+	if err := r.DB.WithContext(ctx).Raw(query, userID).Scan(&vouchers).Error; err != nil {
+		return nil, err
+	}
+
+	return vouchers, nil
+}
+
+func (r *Repository) GetServiceOrderStatus(
+	ctx context.Context,
+	orderID int,
+) (int16, error) {
+
+	var statusID int16
+	err := r.DB.
+		WithContext(ctx).
+		Table("service_orders").
+		Select("status_id").
+		Where("id = ?", orderID).
+		Scan(&statusID).Error
+
+	if err != nil {
+		return 0, err
+	}
+
+	if statusID == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+
+	return statusID, nil
+}
+
+func (r *Repository) ServiceOrderStatusExists(
+	ctx context.Context,
+	statusID int16,
+) (bool, error) {
+
+	var exists bool
+	err := r.DB.
+		WithContext(ctx).
+		Raw(`
+			SELECT EXISTS (
+				SELECT 1 FROM service_order_statuses WHERE id = ?
+			)
+		`, statusID).
+		Scan(&exists).Error
+
+	return exists, err
+}
+
+func (r *Repository) UpdateServiceOrderStatus(
+	ctx context.Context,
+	orderID int,
+	fromStatus int16,
+	toStatus int16,
+) error {
+
+	tx := r.DB.WithContext(ctx).
+		Table("service_orders").
+		Where("id = ? AND status_id = ?", orderID, fromStatus).
+		Updates(map[string]interface{}{
+			"status_id":  toStatus,
+			"updated_at": time.Now(),
+		})
+
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	if tx.RowsAffected == 0 {
+		return errors.New("status not updated")
+	}
+
+	return nil
+}
+
+func (r *Repository) GetFCMTokensByUserID(
+	ctx context.Context,
+	userID int64,
+) ([]string, error) {
+
+	var tokens []string
+
+	err := r.DB.WithContext(ctx).
+		Table("user_fcm_tokens").
+		Where("user_id = ?", userID).
+		Pluck("fcm_token", &tokens).Error
+
+	return tokens, err
+}
+
+func (r *Repository) LogFCMResult(userID int64, token string, status string, errStr *string) error {
+	logEntry := models.FCMLog{
+		UserID: userID,
+		Token:  token,
+		Status: status,
+	}
+	if errStr != nil {
+		logEntry.Error = *errStr
+	}
+
+	return r.DB.Create(&logEntry).Error
+}
