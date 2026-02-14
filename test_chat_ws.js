@@ -13,7 +13,8 @@ const CUSTOMER_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6InJhbnR
 const MITRA_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImFuZHJpcHJhc3V0aW9AZ21haWwuY29tIiwiZXhwIjoxNzcxMTYzNDMwLCJpZCI6NiwibmFtYSI6IkFuZHJpIFByYXN1dGlvIiwicGhvbmUiOiIwODEzOTg4MzI4MzAifQ.FoYn6r-z0MNBSJX3298mlrjbDAlA_Z9ixYXUZ_-Wocw';
 
 // Configuration
-const SERVER_URL = 'wss://be-teka-katanyangoding255248-afaak30s.leapcell.dev/api/realtime/chat/2';
+const SERVER_URL = 'ws://localhost:8080/api/realtime/chat/2';
+// const SERVER_URL = 'wss://be-teka-katanyangoding255248-afaak30s.leapcell.dev/api/realtime/chat/2';
 const ORDER_ID = 2;
 
 class ChatClient {
@@ -23,6 +24,8 @@ class ChatClient {
         this.color = color;
         this.ws = null;
         this.connected = false;
+        this.historyCount = 0;
+        this.isLoadingHistory = true;
     }
 
     connect() {
@@ -66,9 +69,25 @@ class ChatClient {
         }
 
         const time = new Date(message.created_at).toLocaleTimeString();
-        const prefix = message.sender_type === this.name.toLowerCase() ? '📤 SENT' : '📥 RECEIVED';
         
-        console.log(`${this.color}${prefix} [${this.name}] ${message.sender_type} at ${time}: ${message.message}${'\x1b[0m'}`);
+        // Track history messages (messages received right after connection)
+        if (this.isLoadingHistory) {
+            this.historyCount++;
+            const prefix = message.sender_type === this.name.toLowerCase() ? '📤 SENT' : '📥 RECEIVED';
+            console.log(`${this.color}📜 HISTORY [${this.name}] ${message.sender_type} at ${time}: ${message.message}${'\x1b[0m'}`);
+            
+            // After a short delay, assume history loading is done
+            setTimeout(() => {
+                if (this.isLoadingHistory && this.historyCount > 0) {
+                    this.isLoadingHistory = false;
+                    console.log(`${this.color}✅ [${this.name}] Loaded ${this.historyCount} messages from history${'\x1b[0m'}`);
+                }
+            }, 500);
+        } else {
+            // Real-time messages
+            const prefix = message.sender_type === this.name.toLowerCase() ? '📤 SENT' : '📥 RECEIVED';
+            console.log(`${this.color}${prefix} [${this.name}] ${message.sender_type} at ${time}: ${message.message}${'\x1b[0m'}`);
+        }
     }
 
     sendMessage(text) {
