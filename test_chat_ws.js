@@ -13,8 +13,8 @@ const CUSTOMER_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6InJhbnR
 const MITRA_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImFuZHJpcHJhc3V0aW9AZ21haWwuY29tIiwiZXhwIjoxNzcxMTYzNDMwLCJpZCI6NiwibmFtYSI6IkFuZHJpIFByYXN1dGlvIiwicGhvbmUiOiIwODEzOTg4MzI4MzAifQ.FoYn6r-z0MNBSJX3298mlrjbDAlA_Z9ixYXUZ_-Wocw';
 
 // Configuration
-const SERVER_URL = 'ws://localhost:8080/api/realtime/chat/2';
-// const SERVER_URL = 'wss://be-teka-katanyangoding255248-afaak30s.leapcell.dev/api/realtime/chat/2';
+// const SERVER_URL = 'ws://localhost:8080/api/realtime/chat/2';
+const SERVER_URL = 'wss://be-teka-katanyangoding255248-afaak30s.leapcell.dev/api/realtime/chat/2';
 const ORDER_ID = 2;
 
 class ChatClient {

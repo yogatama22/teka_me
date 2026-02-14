@@ -168,7 +168,27 @@ func ChatWebSocketHandler(c *websocket.Conn) {
 			orderIDStr, userID, remainingClients)
 	}()
 
-	log.Printf("🎧 [STEP 8] Entering message loop for user %d...\n", userID)
+	// Set up ping/pong keepalive to prevent idle timeout
+	c.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.SetPongHandler(func(string) error {
+		c.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// Start ping ticker in background
+	pingTicker := time.NewTicker(25 * time.Second)
+	defer pingTicker.Stop()
+
+	go func() {
+		for range pingTicker.C {
+			if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("⚠️ Ping failed for user %d: %v\n", userID, err)
+				return
+			}
+		}
+	}()
+
+	log.Printf("🎧 [STEP 8] Entering message loop for user %d (with keepalive)...\n", userID)
 	for {
 		var req struct {
 			Message string `json:"message"`
@@ -177,6 +197,9 @@ func ChatWebSocketHandler(c *websocket.Conn) {
 			log.Printf("⚠️ Error reading message from user %d: %v\n", userID, err)
 			break
 		}
+
+		// Reset read deadline on each message
+		c.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		if req.Message == "" {
 			continue
