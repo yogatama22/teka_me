@@ -331,6 +331,22 @@ func (s *Service) CompleteOrderUser(
 	return nil
 }
 
+func (s *Service) GetRatingSummary(ctx context.Context, mitraID int64) (models.RatingSummary, error) {
+	return s.Repo.GetMitraRatingSummary(ctx, mitraID)
+}
+
+func (s *Service) GetRatingHistory(ctx context.Context, mitraID int64) ([]models.DayHistory, error) {
+	return s.Repo.GetMitraRatingHistory(ctx, mitraID)
+}
+
+func (s *Service) GetOrderSummary(ctx context.Context, mitraID int64) (models.OrderSummary, error) {
+	return s.Repo.GetMitraOrderSummary(ctx, mitraID)
+}
+
+func (s *Service) GetOrderHistory(ctx context.Context, mitraID int64) ([]models.OrderDayHistory, error) {
+	return s.Repo.GetMitraOrderHistory(ctx, mitraID)
+}
+
 // Rate doctor
 func (s *Service) RateDoctor(
 	ctx context.Context,

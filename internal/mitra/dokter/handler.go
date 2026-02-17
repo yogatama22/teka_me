@@ -411,3 +411,75 @@ func (h *Handler) UpdateServiceOrderStatus(c *fiber.Ctx) error {
 		"message": "status updated",
 	})
 }
+
+// GetRatingSummary: mitra melihat rata-rata rating
+func (h *Handler) GetRatingSummary(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	summary, err := h.Service.GetRatingSummary(c.Context(), mitraID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": summary,
+	})
+}
+
+// GetRatingHistory: mitra melihat riwayat rating detail grouped by day
+func (h *Handler) GetRatingHistory(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	history, err := h.Service.GetRatingHistory(c.Context(), mitraID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": history,
+	})
+}
+
+// GetOrderSummary: mitra melihat total order
+func (h *Handler) GetOrderSummary(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	summary, err := h.Service.GetOrderSummary(c.Context(), mitraID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": summary,
+	})
+}
+
+// GetOrderHistory: mitra melihat riwayat order per hari bulan berjalan
+func (h *Handler) GetOrderHistory(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	history, err := h.Service.GetOrderHistory(c.Context(), mitraID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": history,
+	})
+}

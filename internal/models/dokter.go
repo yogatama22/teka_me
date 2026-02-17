@@ -109,6 +109,15 @@ type ServiceOrder struct {
 	CompletedAt *time.Time `json:"completed_at"` // opsional
 }
 
+type OrderSummary struct {
+	TotalOrders int64 `json:"total_orders"`
+}
+
+type OrderDayHistory struct {
+	Date   string               `json:"date"`
+	Orders []ActiveServiceOrder `json:"orders"`
+}
+
 type CustomerServiceOrder struct {
 	ID        int64      `json:"id"`
 	Status    string     `json:"status"`
@@ -183,6 +192,7 @@ type ActiveServiceOrder struct {
 	CustomerLng float64      `json:"customer_lng"`
 	MitraLat    float64      `json:"mitra_lat"`
 	MitraLng    float64      `json:"mitra_lng"`
+	CreatedAt   time.Time    `json:"created_at"`
 }
 
 type CustomerInfo struct {

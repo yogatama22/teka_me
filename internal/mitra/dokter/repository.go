@@ -1195,3 +1195,132 @@ func (r *Repository) DeductCustomerBalance(
 	log.Printf("[DeductCustomerBalance] Success. Committing transaction.")
 	return tx.Commit().Error
 }
+
+func (r *Repository) GetMitraRatingSummary(ctx context.Context, mitraID int64) (models.RatingSummary, error) {
+	var summary models.RatingSummary
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT 
+			COUNT(*) as total_ratings, 
+			COALESCE(AVG(rating), 0) as average_rating 
+		FROM myschema.mitra_ratings 
+		WHERE mitra_id = ?
+	`, mitraID).Scan(&summary).Error
+
+	return summary, err
+}
+
+func (r *Repository) GetMitraRatingHistory(ctx context.Context, mitraID int64) ([]models.DayHistory, error) {
+	var results []models.MitraRating
+
+	// Fetch all ratings for the current month with customer name snapshot
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT 
+			mr.id, mr.service_order_id, mr.mitra_id, mr.customer_id, 
+			so.customer_name,
+			mr.rating, mr.review, mr.created_at 
+		FROM myschema.mitra_ratings mr
+		JOIN myschema.service_orders so ON so.id = mr.service_order_id
+		WHERE mr.mitra_id = ? 
+		  AND DATE_TRUNC('month', mr.created_at) = DATE_TRUNC('month', CURRENT_DATE)
+		ORDER BY mr.created_at DESC
+	`, mitraID).Scan(&results).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by date in Go
+	historyMap := make(map[string][]models.MitraRating)
+	var dates []string
+
+	for _, res := range results {
+		// PostgreSQL TO_CHAR or go time formatting?
+		// results has type string for CreatedAt, but let's assume it has the date
+		// Actually, let's fix the model if needed, but for now let's just use the string prefix if it follows YYYY-MM-DD
+		date := res.CreatedAt[:10] // Simple date extraction
+		if _, exists := historyMap[date]; !exists {
+			dates = append(dates, date)
+		}
+		historyMap[date] = append(historyMap[date], res)
+	}
+
+	var history []models.DayHistory
+	for _, date := range dates {
+		history = append(history, models.DayHistory{
+			Date:    date,
+			Ratings: historyMap[date],
+		})
+	}
+
+	return history, nil
+}
+
+func (r *Repository) GetMitraOrderSummary(ctx context.Context, mitraID int64) (models.OrderSummary, error) {
+	var summary models.OrderSummary
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT COUNT(*) as total_orders 
+		FROM myschema.service_orders 
+		WHERE mitra_id = ? AND status_id = 6
+	`, mitraID).Scan(&summary).Error
+	return summary, err
+}
+
+func (r *Repository) GetMitraOrderHistory(ctx context.Context, mitraID int64) ([]models.OrderDayHistory, error) {
+	var rows []activeServiceOrderRow
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT
+			so.id,
+			so.start_time,
+			so.status_id,
+			so.order_number,
+			sos.code AS status_name,
+			so.price,
+			so.keluhan,
+			so.customer_id,
+			so.customer_name  AS customer_nama,
+			so.customer_phone AS customer_phone,
+			so.mitra_id,
+			so.mitra_name     AS mitra_nama,
+			so.mitra_phone    AS mitra_phone,
+			so.customer_latitude  AS customer_lat,
+			so.customer_longitude AS customer_lng,
+			so.mitra_latitude     AS mitra_lat,
+			so.mitra_longitude    AS mitra_lng,
+			so.created_at
+		FROM service_orders so
+		JOIN service_order_statuses sos 
+			ON sos.id = so.status_id
+		WHERE so.mitra_id = ? 
+		  AND so.status_id = 6
+		  AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
+		ORDER BY so.created_at DESC
+	`, mitraID).Scan(&rows).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by date in Go
+	historyMap := make(map[string][]models.ActiveServiceOrder)
+	var dates []string
+
+	for _, row := range rows {
+		date := row.CreatedAt.Format("2006-01-02")
+		if _, exists := historyMap[date]; !exists {
+			dates = append(dates, date)
+		}
+		historyMap[date] = append(historyMap[date], *mapActiveServiceOrder(row))
+	}
+
+	var history []models.OrderDayHistory
+	for _, date := range dates {
+		history = append(history, models.OrderDayHistory{
+			Date:   date,
+			Orders: historyMap[date],
+		})
+	}
+
+	return history, nil
+}

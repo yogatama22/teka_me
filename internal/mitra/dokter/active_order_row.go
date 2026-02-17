@@ -23,4 +23,5 @@ type activeServiceOrderRow struct {
 	CustomerLng float64
 	MitraLat    float64
 	MitraLng    float64
+	CreatedAt   time.Time
 }

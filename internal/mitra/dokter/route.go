@@ -42,6 +42,12 @@ func RegisterRoutes(app *fiber.App, h *Handler) {
 	dokter.Get("/current-order", h.GetMitraCurrentOrder)
 	// Complete service
 	dokter.Post("/transaction/:id/complete", h.CompleteOrder)
+	// Rating stats (Monthly breakdown)
+	dokter.Get("/rating-summary", h.GetRatingSummary)
+	dokter.Get("/rating-history", h.GetRatingHistory)
+	// Order stats
+	dokter.Get("/order-summary", h.GetOrderSummary)
+	dokter.Get("/order-history", h.GetOrderHistory)
 
 	// 🔥 UPDATE STATUS (OTW / ARRIVED / COMPLETED)
 	dokter.Put("/service-orders/:id/status", h.UpdateServiceOrderStatus)
