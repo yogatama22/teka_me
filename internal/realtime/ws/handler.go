@@ -86,11 +86,12 @@ func ChatWebSocketHandler(c *websocket.Conn) {
 	log.Printf("✅ [STEP 4] Order found: customerID=%d, mitraID=%d\n", order.CustomerID, order.MitraID)
 
 	senderType := ""
-	if userID == order.MitraID {
+	switch userID {
+	case order.MitraID:
 		senderType = "mitra"
-	} else if userID == order.CustomerID {
+	case order.CustomerID:
 		senderType = "customer"
-	} else {
+	default:
 		log.Printf("❌ [STEP 5] User %d not authorized for order %d (customer=%d, mitra=%d)\n",
 			userID, orderID, order.CustomerID, order.MitraID)
 		c.WriteJSON(fiber.Map{"error": "not authorized for this order"})

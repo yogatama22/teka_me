@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"teka-api/internal/models"
 	"teka-api/pkg/database"
 	"time"
@@ -107,4 +108,35 @@ func SaveFCMToken(userID uint, fcmToken, deviceName, deviceID string) error {
 			"created_at":  now,
 			"updated_at":  now,
 		}).Error
+}
+
+// ================= BALANCE & TRANSACTIONS ====================
+
+func GetLatestSaldo(userID uint, roleID uint) (int64, error) {
+	var saldo int64
+	err := database.DB.
+		Table("myschema.saldo_role_transactions").
+		Select("saldo_setelah").
+		Where("user_id = ? AND role_id = ?", userID, roleID).
+		Order("id DESC").
+		Limit(1).
+		Scan(&saldo).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	return saldo, err
+}
+
+func InsertSaldoTransaction(tx *gorm.DB, trx *models.SaldoTransaction) error {
+	return tx.Create(trx).Error
+}
+
+func GetTransactionHistory(userID uint, roleID uint) ([]models.SaldoTransaction, error) {
+	var results []models.SaldoTransaction
+	err := database.DB.
+		Where("user_id = ? AND role_id = ?", userID, roleID).
+		Order("created_at DESC").
+		Find(&results).Error
+	return results, err
 }

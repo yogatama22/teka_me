@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"teka-api/internal/models"
 	"time"
@@ -596,7 +597,7 @@ func (r *Repository) GetActiveServiceOrder(
 	JOIN service_order_statuses sos 
 		ON sos.id = so.status_id
 	WHERE `+where+`
-	  AND so.status_id <> 5
+	  AND so.status_id NOT IN (5, 6)
 	LIMIT 1
 `, userID).Scan(&row).Error
 
@@ -1072,4 +1073,125 @@ func (r *Repository) LogFCMResult(userID int64, token string, status string, err
 	}
 
 	return r.DB.Create(&logEntry).Error
+}
+
+// DeductCustomerBalance deducts amount from user's balance using saldo_role_transactions
+func (r *Repository) DeductCustomerBalance(
+	ctx context.Context,
+	customerID int64,
+	orderID int64,
+	amount float64,
+) error {
+	log.Printf("[DeductCustomerBalance] Starting for customerID: %d, orderID: %d, amount: %.2f", customerID, orderID, amount)
+
+	tx := r.DB.WithContext(ctx).Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[DeductCustomerBalance] Recovered from panic: %v", r)
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Get latest balance from saldo_role_transactions (Role ID 1 = Customer)
+	var latestSaldo int64
+	var orderNo string
+
+	// Ambil order_number untuk transaction_no
+	err := tx.Raw(`SELECT order_number FROM myschema.service_orders WHERE id = ?`, orderID).Scan(&orderNo).Error
+	if err != nil {
+		log.Printf("[DeductCustomerBalance] Error fetching order_number: %v", err)
+		tx.Rollback()
+		return err
+	}
+	log.Printf("[DeductCustomerBalance] Order number: %s", orderNo)
+
+	// Lock row terakhir balance user tersebut untuk menghindari race condition
+	err = tx.Raw(`
+		SELECT saldo_setelah 
+		FROM myschema.saldo_role_transactions 
+		WHERE user_id = ? AND role_id = 1 
+		ORDER BY id DESC 
+		FOR UPDATE
+	`, customerID).Scan(&latestSaldo).Error
+
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("[DeductCustomerBalance] Error fetching latest balance: %v", err)
+		tx.Rollback()
+		return err
+	}
+	log.Printf("[DeductCustomerBalance] Latest saldo: %d", latestSaldo)
+
+	// 2. Check sufficiency
+	intAmount := int64(amount)
+	if latestSaldo < intAmount {
+		log.Printf("[DeductCustomerBalance] Insufficient balance. Have: %d, Need: %d", latestSaldo, intAmount)
+		tx.Rollback()
+		return fmt.Errorf("saldo tidak mencukupi. Saldo saat ini: %d, Dibutuhkan: %d", latestSaldo, intAmount)
+	}
+
+	// 3. Insert mutation ke saldo_role_transactions
+	newSaldo := latestSaldo - intAmount
+	const (
+		RoleCustomer         = 1
+		CategoryOrderPayment = "order_payment"
+	)
+
+	if err := tx.Exec(`
+    INSERT INTO myschema.saldo_role_transactions (
+        user_id, role_id, transaction_no, category, amount, saldo_setelah, description, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+`,
+		customerID,
+		RoleCustomer,
+		orderNo,
+		CategoryOrderPayment,
+		intAmount,
+		newSaldo,
+		"Pembayaran order Dokter",
+	).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	log.Printf("[DeductCustomerBalance] Mutation inserted. New saldo: %d", newSaldo)
+
+	// 4. Update order_transactions status to PAID (status_id = 2)
+	resTrx := tx.Exec(`
+		UPDATE myschema.order_transactions 
+		SET status_id = 2, paid_at = NOW(), updated_at = NOW() 
+		WHERE order_id = ?
+	`, orderID)
+	if resTrx.Error != nil {
+		log.Printf("[DeductCustomerBalance] Error updating order_transactions: %v", resTrx.Error)
+		tx.Rollback()
+		return resTrx.Error
+	}
+	log.Printf("[DeductCustomerBalance] order_transactions updated. Rows affected: %d", resTrx.RowsAffected)
+
+	// 5. Update service order status to 6 (FINISHED)
+	res := tx.Exec(`
+		UPDATE myschema.service_orders
+		SET status_id = 6, updated_at = NOW()
+		WHERE id = ? AND customer_id = ? AND status_id =4
+	`, orderID, customerID)
+
+	if res.Error != nil {
+		log.Printf("[DeductCustomerBalance] Error updating service_orders: %v", res.Error)
+		tx.Rollback()
+		return res.Error
+	}
+
+	log.Printf("[DeductCustomerBalance] service_orders updated. Rows affected: %d", res.RowsAffected)
+
+	if res.RowsAffected == 0 {
+		// Log detail tambahan kalau gagal
+		var currentStatus int16
+		tx.Raw(`SELECT status_id FROM myschema.service_orders WHERE id = ?`, orderID).Scan(&currentStatus)
+		log.Printf("[DeductCustomerBalance] Details: orderID=%d, customerID=%d, currentStatusInDB=%d", orderID, customerID, currentStatus)
+
+		tx.Rollback()
+		return errors.New("order tidak ditemukan atau status tidak valid untuk diselesaikan")
+	}
+
+	log.Printf("[DeductCustomerBalance] Success. Committing transaction.")
+	return tx.Commit().Error
 }

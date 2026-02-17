@@ -7,6 +7,7 @@ import (
 	"teka-api/internal/models"
 	"teka-api/pkg/database"
 	"teka-api/pkg/utils"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -95,4 +96,37 @@ func Login(email, password string) (*models.User, error) {
 	}
 
 	return &user, nil
+}
+func TopUpBalance(userID uint, roleID uint, amount int64) error {
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		// 1. Get current balance
+		latestSaldo, err := GetLatestSaldo(userID, roleID)
+		if err != nil {
+			return err
+		}
+
+		// 2. Calculate new balance
+		newSaldo := latestSaldo + amount
+
+		// 3. Generate transaction no
+		trxNo := fmt.Sprintf("TOPUP-%d-%d", time.Now().Unix(), userID)
+
+		// 4. Insert transaction
+		trx := &models.SaldoTransaction{
+			UserID:        userID,
+			RoleID:        roleID,
+			TransactionNo: trxNo,
+			Category:      "topup",
+			Amount:        amount,
+			SaldoSetelah:  newSaldo,
+			Description:   "Topup saldo customer",
+			CreatedAt:     time.Now(),
+		}
+
+		return InsertSaldoTransaction(tx, trx)
+	})
+}
+
+func GetTransactions(userID uint, roleID uint) ([]models.SaldoTransaction, error) {
+	return GetTransactionHistory(userID, roleID)
 }
