@@ -307,13 +307,18 @@ func (s *Service) CompleteOrderUser(
 		return errors.New("invalid subtotal")
 	}
 
-	// 1️⃣ Complete order (Hanya update status user)
-	// Tidak insert transaction baru karena sudah dibuat oleh dokter
-	if err := s.Repo.CompleteOrderCustomer(ctx, req.OrderID, customerID); err != nil {
+	amount := req.Subtotal - req.Discount
+
+	// 1️⃣ Complete order & Potong Saldo (Atomic)
+	// - Cek saldo di saldo_role_transactions
+	// - Insert mutasi saldo baru
+	// - Update status order_transactions jadi Paid
+	// - Update status service_orders jadi 6 (Finished)
+	if err := s.Repo.DeductCustomerBalance(ctx, customerID, req.OrderID, amount); err != nil {
 		return err
 	}
 
-	// 2️⃣ Broadcast Update (Manual, karena UpdateServiceOrderStatus melakukan update DB lagi)
+	// 2️⃣ Broadcast Update
 	s.Hub.Broadcast(int(req.OrderID), map[string]interface{}{
 		"event":     "order_status_updated",
 		"order_id":  req.OrderID,

@@ -30,6 +30,8 @@ func AuthRoutes(app *fiber.App) {
 	auth.Post("/verify-otp", VerifyOtpController)
 	auth.Post("/login", LoginController)
 	auth.Post("/resend-otp", ResendOtpController)
+	auth.Post("/topup", middleware.JWTProtected(), TopUpHandler)
+	auth.Get("/transactions", middleware.JWTProtected(), TransactionHistoryHandler)
 
 	// PIN routes: /api/pin/... (protected)
 	pin := api.Group("/pin", middleware.JWTProtected())

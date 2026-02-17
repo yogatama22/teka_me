@@ -402,3 +402,51 @@ func RegisterFCM(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{"message": "FCM token registered"})
 }
+
+// ========= TOP UP ========= \\
+func TopUpHandler(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(uint)
+
+	// In a real app, we'd get the role from the context or body
+	// For now, let's assume it's for the active role
+	userResp, err := GetUserWithActiveRole(userID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	var body struct {
+		Amount int64 `json:"amount"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid payload"})
+	}
+
+	if body.Amount <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "amount must be greater than 0"})
+	}
+
+	if err := TopUpBalance(userID, userResp.RoleID, body.Amount); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to top up", "detail": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"message": "Top up successful"})
+}
+
+// ========= TRANSACTION HISTORY ========= \\
+func TransactionHistoryHandler(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(uint)
+
+	userResp, err := GetUserWithActiveRole(userID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	history, err := GetTransactions(userID, userResp.RoleID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to get transaction history"})
+	}
+
+	return c.JSON(fiber.Map{
+		"history": history,
+	})
+}
