@@ -17,10 +17,10 @@ func AuthRoutes(app *fiber.App) {
 
 	api.Get("/version", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"version":    "v1.0.1",
-			"service":    "teka-api",
-			"tanggal":    "13-02-2026",
-			"keterangan": "web socket",
+			"version": "v1.0.1",
+			"service": "teka-api",
+			"tanggal": "19-02-2026",
+			// "keterangan": "web socket",
 		})
 	})
 

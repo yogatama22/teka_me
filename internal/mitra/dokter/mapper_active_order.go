@@ -27,5 +27,6 @@ func mapActiveServiceOrder(row activeServiceOrderRow) *models.ActiveServiceOrder
 		CustomerLng: row.CustomerLng,
 		MitraLat:    row.MitraLat,
 		MitraLng:    row.MitraLng,
+		CreatedAt:   row.CreatedAt,
 	}
 }

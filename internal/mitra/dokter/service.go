@@ -86,7 +86,7 @@ func (s *Service) SearchDoctor(
 		return nil, 0, err
 	}
 	if len(doctors) == 0 {
-		return nil, 0, errors.New("no doctor available")
+		return nil, 0, errors.New("tidak ada dokter yang tersedia")
 	}
 
 	// 2️⃣ Optional fields
@@ -329,6 +329,45 @@ func (s *Service) CompleteOrderUser(
 	redis.Rdb.Del(ctx, fmt.Sprintf("order_chat:%d", req.OrderID))
 
 	return nil
+}
+
+func (s *Service) GetMitraBalance(ctx context.Context, mitraID int64) (int64, error) {
+	return s.Repo.GetLatestBalance(ctx, mitraID)
+}
+
+func (s *Service) Withdraw(ctx context.Context, mitraID int64, req models.WithdrawRequest) error {
+	if req.Amount <= 0 {
+		return errors.New("jumlah penarikan harus lebih dari 0")
+	}
+
+	return s.Repo.RequestWithdrawal(
+		ctx,
+		mitraID,
+		req.Amount,
+		req.BankName,
+		req.AccountNumber,
+		req.AccountHolder,
+	)
+}
+
+func (s *Service) GetRatingSummary(ctx context.Context, mitraID int64) (models.RatingSummary, error) {
+	return s.Repo.GetMitraRatingSummary(ctx, mitraID)
+}
+
+func (s *Service) GetRatingHistory(ctx context.Context, mitraID int64) ([]models.DayHistory, error) {
+	return s.Repo.GetMitraRatingHistory(ctx, mitraID)
+}
+
+func (s *Service) GetOrderSummary(ctx context.Context, mitraID int64) (models.OrderSummary, error) {
+	return s.Repo.GetMitraOrderSummary(ctx, mitraID)
+}
+
+func (s *Service) GetOrderHistory(ctx context.Context, mitraID int64) ([]models.OrderDayHistory, error) {
+	return s.Repo.GetMitraOrderHistory(ctx, mitraID)
+}
+
+func (s *Service) GetEarningsHistory(ctx context.Context, mitraID int64) (models.EarningMonthlyHistory, error) {
+	return s.Repo.GetMitraEarningsHistory(ctx, mitraID)
 }
 
 // Rate doctor

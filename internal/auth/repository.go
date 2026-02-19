@@ -112,12 +112,12 @@ func SaveFCMToken(userID uint, fcmToken, deviceName, deviceID string) error {
 
 // ================= BALANCE & TRANSACTIONS ====================
 
-func GetLatestSaldo(userID uint, roleID uint) (int64, error) {
+func GetLatestSaldo(userID uint) (int64, error) {
 	var saldo int64
 	err := database.DB.
 		Table("myschema.saldo_role_transactions").
 		Select("saldo_setelah").
-		Where("user_id = ? AND role_id = ?", userID, roleID).
+		Where("user_id = ?", userID).
 		Order("id DESC").
 		Limit(1).
 		Scan(&saldo).Error
@@ -132,10 +132,10 @@ func InsertSaldoTransaction(tx *gorm.DB, trx *models.SaldoTransaction) error {
 	return tx.Create(trx).Error
 }
 
-func GetTransactionHistory(userID uint, roleID uint) ([]models.SaldoTransaction, error) {
+func GetTransactionHistory(userID uint) ([]models.SaldoTransaction, error) {
 	var results []models.SaldoTransaction
 	err := database.DB.
-		Where("user_id = ? AND role_id = ?", userID, roleID).
+		Where("user_id = ?", userID).
 		Order("created_at DESC").
 		Find(&results).Error
 	return results, err

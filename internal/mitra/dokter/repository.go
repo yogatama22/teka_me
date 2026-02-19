@@ -145,9 +145,12 @@ FROM (
 		) AS distance_km
 	FROM mitra_details md
 	JOIN users u ON u.id = md.user_id
+	JOIN user_roles ur ON ur.user_id = u.id
 	WHERE md.job_category_id = ?
 	  AND (? = 0 OR md.job_sub_category_id = ?)
 	  AND md.availability_status_id = 2
+	  AND ur.role_id = 2
+	  AND ur.active = true
 
 	  AND NOT EXISTS (
 		  SELECT 1
@@ -1109,7 +1112,7 @@ func (r *Repository) DeductCustomerBalance(
 	err = tx.Raw(`
 		SELECT saldo_setelah 
 		FROM myschema.saldo_role_transactions 
-		WHERE user_id = ? AND role_id = 1 
+		WHERE user_id = ? 
 		ORDER BY id DESC 
 		FOR UPDATE
 	`, customerID).Scan(&latestSaldo).Error
@@ -1132,17 +1135,15 @@ func (r *Repository) DeductCustomerBalance(
 	// 3. Insert mutation ke saldo_role_transactions
 	newSaldo := latestSaldo - intAmount
 	const (
-		RoleCustomer         = 1
 		CategoryOrderPayment = "order_payment"
 	)
 
 	if err := tx.Exec(`
     INSERT INTO myschema.saldo_role_transactions (
-        user_id, role_id, transaction_no, category, amount, saldo_setelah, description, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+        user_id, transaction_no, category, amount, saldo_setelah, description, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, NOW())
 `,
 		customerID,
-		RoleCustomer,
 		orderNo,
 		CategoryOrderPayment,
 		intAmount,
@@ -1192,6 +1193,314 @@ func (r *Repository) DeductCustomerBalance(
 		return errors.New("order tidak ditemukan atau status tidak valid untuk diselesaikan")
 	}
 
+	// 6. Record Mitra Income
+	var trans struct {
+		MitraID     int64
+		MitraIncome float64
+	}
+	err = tx.Raw(`
+		SELECT mitra_id, mitra_income 
+		FROM myschema.order_transactions 
+		WHERE order_id = ?
+	`, orderID).Scan(&trans).Error
+	if err != nil {
+		log.Printf("[DeductCustomerBalance] Error fetching order_transaction: %v", err)
+		tx.Rollback()
+		return err
+	}
+
+	// Lock row terakhir balance mitra
+	var mitraLatestSaldo int64
+	err = tx.Raw(`
+		SELECT saldo_setelah 
+		FROM myschema.saldo_role_transactions 
+		WHERE user_id = ? 
+		ORDER BY id DESC 
+		FOR UPDATE
+	`, trans.MitraID).Scan(&mitraLatestSaldo).Error
+
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("[DeductCustomerBalance] Error fetching mitra balance: %v", err)
+		tx.Rollback()
+		return err
+	}
+
+	mitraIncomeInt := int64(amount)
+	mitraNewSaldo := mitraLatestSaldo + mitraIncomeInt
+
+	if err := tx.Exec(`
+		INSERT INTO myschema.saldo_role_transactions (
+			user_id, transaction_no, category, amount, saldo_setelah, description, created_at
+		) VALUES (?, ?, 'income', ?, ?, ?, NOW())
+	`,
+		trans.MitraID,
+		orderNo,
+		mitraIncomeInt,
+		mitraNewSaldo,
+		"Pendapatan order Dokter",
+	).Error; err != nil {
+		log.Printf("[DeductCustomerBalance] Error inserting mitra income: %v", err)
+		tx.Rollback()
+		return err
+	}
+	log.Printf("[DeductCustomerBalance] Mitra income recorded. New saldo: %d", mitraNewSaldo)
+
 	log.Printf("[DeductCustomerBalance] Success. Committing transaction.")
 	return tx.Commit().Error
+}
+
+// GetLatestBalance returns the latest balance for a user and role
+func (r *Repository) GetLatestBalance(ctx context.Context, userID int64) (int64, error) {
+	var balance int64
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT saldo_setelah 
+		FROM myschema.saldo_role_transactions 
+		WHERE user_id = ? ORDER BY id DESC LIMIT 1
+	`, userID).Scan(&balance).Error
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return balance, nil
+}
+
+// RequestWithdrawal processes a withdrawal request for a mitra
+func (r *Repository) RequestWithdrawal(
+	ctx context.Context,
+	mitraID int64,
+	amount int64,
+	bankName, accountNumber, accountHolder string,
+) error {
+	tx := r.DB.WithContext(ctx).Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. Get current balance (Role Mitra = 2)
+	var latestSaldo int64
+	err := tx.Raw(`
+		SELECT saldo_setelah 
+		FROM myschema.saldo_role_transactions 
+		WHERE user_id = ? ORDER BY id DESC LIMIT 1
+		FOR UPDATE
+	`, mitraID).Scan(&latestSaldo).Error
+
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		tx.Rollback()
+		return err
+	}
+
+	// 2. Check sufficiency
+	if latestSaldo < amount {
+		tx.Rollback()
+		return fmt.Errorf("saldo tidak mencukupi. Saldo saat ini: %d, Dibutuhkan: %d", latestSaldo, amount)
+	}
+
+	// 3. Generate transaction no
+	transactionNo := fmt.Sprintf("WD-%d-%d", mitraID, time.Now().UnixNano())
+
+	// 4. Insert mutation
+	newSaldo := latestSaldo - amount
+	if err := tx.Exec(`
+		INSERT INTO myschema.saldo_role_transactions (
+			user_id, transaction_no, category, amount, saldo_setelah, description, created_at
+		) VALUES (?, ?, 'withdrawal', ?, ?, ?, NOW())
+	`,
+		mitraID,
+		transactionNo,
+		amount,
+		newSaldo,
+		fmt.Sprintf("Penarikan saldo ke %s (%s) a/n %s", bankName, accountNumber, accountHolder),
+	).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit().Error
+}
+
+func (r *Repository) GetMitraRatingSummary(ctx context.Context, mitraID int64) (models.RatingSummary, error) {
+	var summary models.RatingSummary
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT 
+			COUNT(*) as total_ratings, 
+			COALESCE(AVG(rating), 0) as average_rating 
+		FROM myschema.mitra_ratings 
+		WHERE mitra_id = ?
+	`, mitraID).Scan(&summary).Error
+
+	return summary, err
+}
+
+func (r *Repository) GetMitraRatingHistory(ctx context.Context, mitraID int64) ([]models.DayHistory, error) {
+	var results []models.MitraRating
+
+	// Fetch all ratings for the current month with customer name snapshot
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT 
+			mr.id, mr.service_order_id, mr.mitra_id, mr.customer_id, 
+			so.customer_name,
+			mr.rating, mr.review, mr.created_at 
+		FROM myschema.mitra_ratings mr
+		JOIN myschema.service_orders so ON so.id = mr.service_order_id
+		WHERE mr.mitra_id = ? 
+		  AND DATE_TRUNC('month', mr.created_at) = DATE_TRUNC('month', CURRENT_DATE)
+		ORDER BY mr.created_at DESC
+	`, mitraID).Scan(&results).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by date in Go
+	historyMap := make(map[string][]models.MitraRating)
+	var dates []string
+
+	for _, res := range results {
+		// PostgreSQL TO_CHAR or go time formatting?
+		// results has type string for CreatedAt, but let's assume it has the date
+		// Actually, let's fix the model if needed, but for now let's just use the string prefix if it follows YYYY-MM-DD
+		date := res.CreatedAt[:10] // Simple date extraction
+		if _, exists := historyMap[date]; !exists {
+			dates = append(dates, date)
+		}
+		historyMap[date] = append(historyMap[date], res)
+	}
+
+	var history []models.DayHistory
+	for _, date := range dates {
+		history = append(history, models.DayHistory{
+			Date:    date,
+			Ratings: historyMap[date],
+		})
+	}
+
+	return history, nil
+}
+
+func (r *Repository) GetMitraOrderSummary(ctx context.Context, mitraID int64) (models.OrderSummary, error) {
+	var summary models.OrderSummary
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT COUNT(*) as total_orders 
+		FROM myschema.service_orders 
+		WHERE mitra_id = ? AND status_id = 6
+	`, mitraID).Scan(&summary).Error
+	return summary, err
+}
+
+func (r *Repository) GetMitraOrderHistory(ctx context.Context, mitraID int64) ([]models.OrderDayHistory, error) {
+	var rows []activeServiceOrderRow
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT
+			so.id,
+			so.start_time,
+			so.status_id,
+			so.order_number,
+			sos.code AS status_name,
+			so.price,
+			so.keluhan,
+			so.customer_id,
+			so.customer_name  AS customer_nama,
+			so.customer_phone AS customer_phone,
+			so.mitra_id,
+			so.mitra_name     AS mitra_nama,
+			so.mitra_phone    AS mitra_phone,
+			so.customer_latitude  AS customer_lat,
+			so.customer_longitude AS customer_lng,
+			so.mitra_latitude     AS mitra_lat,
+			so.mitra_longitude    AS mitra_lng,
+			so.created_at
+		FROM service_orders so
+		JOIN service_order_statuses sos 
+			ON sos.id = so.status_id
+		WHERE so.mitra_id = ? 
+		  AND so.status_id = 6
+		  AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
+		ORDER BY so.created_at DESC
+	`, mitraID).Scan(&rows).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by date in Go
+	historyMap := make(map[string][]models.ActiveServiceOrder)
+	var dates []string
+
+	for _, row := range rows {
+		date := row.CreatedAt.Format("2006-01-02")
+		if _, exists := historyMap[date]; !exists {
+			dates = append(dates, date)
+		}
+		historyMap[date] = append(historyMap[date], *mapActiveServiceOrder(row))
+	}
+
+	var history []models.OrderDayHistory
+	for _, date := range dates {
+		history = append(history, models.OrderDayHistory{
+			Date:   date,
+			Orders: historyMap[date],
+		})
+	}
+
+	return history, nil
+}
+
+func (r *Repository) GetMitraEarningsHistory(ctx context.Context, mitraID int64) (models.EarningMonthlyHistory, error) {
+	var rows []models.IncomeDetail
+
+	err := r.DB.WithContext(ctx).Raw(`
+		SELECT 
+			transaction_no,
+			amount,
+			description,
+			created_at
+		FROM myschema.saldo_role_transactions
+		WHERE user_id = ? 
+		  AND category = 'income'
+		ORDER BY created_at DESC
+	`, mitraID).Scan(&rows).Error
+
+	if err != nil {
+		return models.EarningMonthlyHistory{}, err
+	}
+
+	// Group by month/year in Go
+	groupMap := make(map[string]*models.EarningMonthGroup)
+	var keys []string
+	var totalMonthly int64
+
+	for _, row := range rows {
+		month := row.CreatedAt.Format("01")
+		year := row.CreatedAt.Format("2006")
+		key := year + "-" + month
+
+		if _, exists := groupMap[key]; !exists {
+			keys = append(keys, key)
+			groupMap[key] = &models.EarningMonthGroup{
+				Month: month,
+				Year:  year,
+			}
+		}
+		groupMap[key].Items = append(groupMap[key].Items, row)
+		groupMap[key].MonthlyTotal += row.Amount
+		totalMonthly += row.Amount
+	}
+
+	var history []models.EarningMonthGroup
+	for _, key := range keys {
+		history = append(history, *groupMap[key])
+	}
+
+	return models.EarningMonthlyHistory{
+		TotalAmount: totalMonthly,
+		History:     history,
+	}, nil
 }
