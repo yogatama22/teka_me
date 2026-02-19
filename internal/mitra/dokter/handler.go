@@ -74,7 +74,14 @@ func (h *Handler) RegisterMitra(c *fiber.Ctx) error {
 					"error": fmt.Sprintf("failed to upload %s: %v", field, err),
 				})
 			}
-			files[field] = path
+			// Construct full S3 URL using public endpoint
+			publicURL := os.Getenv("S3_PUBLIC_URL")
+			if publicURL == "" {
+				// Fallback to upload endpoint if public URL not set
+				publicURL = fmt.Sprintf("https://%s/%s", os.Getenv("S3_ENDPOINT"), bucket)
+			}
+			fullURL := fmt.Sprintf("%s/%s", publicURL, path)
+			files[field] = fullURL
 		}
 	}
 
