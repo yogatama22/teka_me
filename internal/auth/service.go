@@ -97,10 +97,10 @@ func Login(email, password string) (*models.User, error) {
 
 	return &user, nil
 }
-func TopUpBalance(userID uint, roleID uint, amount int64) error {
+func TopUpBalance(userID uint, amount int64) error {
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		// 1. Get current balance
-		latestSaldo, err := GetLatestSaldo(userID, roleID)
+		latestSaldo, err := GetLatestSaldo(userID)
 		if err != nil {
 			return err
 		}
@@ -114,7 +114,6 @@ func TopUpBalance(userID uint, roleID uint, amount int64) error {
 		// 4. Insert transaction
 		trx := &models.SaldoTransaction{
 			UserID:        userID,
-			RoleID:        roleID,
 			TransactionNo: trxNo,
 			Category:      "topup",
 			Amount:        amount,
@@ -127,6 +126,6 @@ func TopUpBalance(userID uint, roleID uint, amount int64) error {
 	})
 }
 
-func GetTransactions(userID uint, roleID uint) ([]models.SaldoTransaction, error) {
-	return GetTransactionHistory(userID, roleID)
+func GetTransactions(userID uint) ([]models.SaldoTransaction, error) {
+	return GetTransactionHistory(userID)
 }

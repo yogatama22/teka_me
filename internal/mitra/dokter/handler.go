@@ -483,3 +483,56 @@ func (h *Handler) GetOrderHistory(c *fiber.Ctx) error {
 		"data": history,
 	})
 }
+
+func (h *Handler) GetMitraBalance(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	balance, err := h.Service.GetMitraBalance(c.Context(), mitraID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"balance": balance,
+	})
+}
+
+func (h *Handler) Withdraw(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	var req models.WithdrawRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+
+	if err := h.Service.Withdraw(c.Context(), mitraID, req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "withdrawal request submitted successfully",
+	})
+}
+
+func (h *Handler) GetEarningsHistory(c *fiber.Ctx) error {
+	mitraIDCtx, err := middleware.UserID(c)
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	mitraID := int64(mitraIDCtx)
+
+	history, err := h.Service.GetEarningsHistory(c.Context(), mitraID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(history)
+}

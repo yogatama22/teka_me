@@ -41,14 +41,14 @@ func GetUserWithActiveRole(userID uint) (UserResponse, error) {
 	}, nil
 }
 
-// GetSaldoByRole mengambil saldo terakhir berdasarkan user + role
-func GetSaldoByRole(userID, roleID uint) (int64, error) {
+// GetSaldo mengambil saldo terakhir berdasarkan user
+func GetSaldo(userID uint) (int64, error) {
 	var saldo int64
 
 	err := database.DB.
-		Table("saldo_role_transactions").
+		Table("myschema.saldo_role_transactions").
 		Select("saldo_setelah").
-		Where("user_id = ? AND role_id = ?", userID, roleID).
+		Where("user_id = ?", userID).
 		Order("id DESC").
 		Limit(1).
 		Scan(&saldo).Error

@@ -49,6 +49,11 @@ func RegisterRoutes(app *fiber.App, h *Handler) {
 	dokter.Get("/order-summary", h.GetOrderSummary)
 	dokter.Get("/order-history", h.GetOrderHistory)
 
+	// Earning & Withdrawal
+	dokter.Get("/balance", h.GetMitraBalance)
+	dokter.Post("/withdraw", h.Withdraw)
+	dokter.Get("/earnings", h.GetEarningsHistory)
+
 	// 🔥 UPDATE STATUS (OTW / ARRIVED / COMPLETED)
 	dokter.Put("/service-orders/:id/status", h.UpdateServiceOrderStatus)
 

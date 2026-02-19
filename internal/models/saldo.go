@@ -5,7 +5,6 @@ import "time"
 type SaldoTransaction struct {
 	ID            int64     `json:"id" gorm:"primaryKey"`
 	UserID        uint      `json:"user_id"`
-	RoleID        uint      `json:"role_id"`
 	TransactionNo string    `json:"transaction_no" gorm:"uniqueIndex"`
 	Category      string    `json:"category"`
 	Amount        int64     `json:"amount"`

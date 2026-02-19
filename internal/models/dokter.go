@@ -118,6 +118,25 @@ type OrderDayHistory struct {
 	Orders []ActiveServiceOrder `json:"orders"`
 }
 
+type EarningMonthGroup struct {
+	Month        string         `json:"month"`
+	Year         string         `json:"year"`
+	MonthlyTotal int64          `json:"monthly_total"`
+	Items        []IncomeDetail `json:"items"`
+}
+
+type IncomeDetail struct {
+	TransactionNo string    `json:"transaction_no"`
+	Amount        int64     `json:"amount"`
+	Description   string    `json:"description"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type EarningMonthlyHistory struct {
+	TotalAmount int64               `json:"total_amount"`
+	History     []EarningMonthGroup `json:"history"`
+}
+
 type CustomerServiceOrder struct {
 	ID        int64      `json:"id"`
 	Status    string     `json:"status"`
