@@ -563,17 +563,11 @@ WHERE id = ?;
 	return tx.Commit().Error
 }
 
-// AKTIF ORDER
-func (r *Repository) GetActiveServiceOrder(
+// AKTIF ORDER FOR CUSTOMER
+func (r *Repository) GetActiveServiceOrderForCustomer(
 	ctx context.Context,
-	userID int64,
-	isMitra bool,
+	customerID int64,
 ) (*models.ActiveServiceOrder, error) {
-
-	where := "so.customer_id = ?"
-	if isMitra {
-		where = "so.mitra_id = ?"
-	}
 
 	var row activeServiceOrderRow
 
@@ -599,10 +593,52 @@ func (r *Repository) GetActiveServiceOrder(
 	FROM service_orders so
 	JOIN service_order_statuses sos 
 		ON sos.id = so.status_id
-	WHERE `+where+`
+	WHERE so.customer_id = ?
 	  AND so.status_id NOT IN (5, 6)
 	LIMIT 1
-`, userID).Scan(&row).Error
+`, customerID).Scan(&row).Error
+
+	if err != nil || row.ID == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	return mapActiveServiceOrder(row), nil
+}
+
+// AKTIF ORDER FOR MITRA
+func (r *Repository) GetActiveServiceOrderForMitra(
+	ctx context.Context,
+	mitraID int64,
+) (*models.ActiveServiceOrder, error) {
+
+	var row activeServiceOrderRow
+
+	err := r.DB.WithContext(ctx).Raw(`
+	SELECT
+		so.id,
+		so.start_time,
+		so.status_id,
+		so.order_number,
+		sos.code AS status_name,
+		so.price,
+		so.keluhan,
+		so.customer_id,
+		so.customer_name  AS customer_nama,
+		so.customer_phone AS customer_phone,
+		so.mitra_id,
+		so.mitra_name     AS mitra_nama,
+		so.mitra_phone    AS mitra_phone,
+		so.customer_latitude  AS customer_lat,
+		so.customer_longitude AS customer_lng,
+		so.mitra_latitude     AS mitra_lat,
+		so.mitra_longitude    AS mitra_lng
+	FROM service_orders so
+	JOIN service_order_statuses sos 
+		ON sos.id = so.status_id
+	WHERE so.mitra_id = ?
+	  AND so.status_id NOT IN (5, 6)
+	LIMIT 1
+`, mitraID).Scan(&row).Error
 
 	if err != nil || row.ID == 0 {
 		return nil, gorm.ErrRecordNotFound
@@ -798,17 +834,11 @@ func (r *Repository) GetExpiredOffers(
 	var offers []models.ExpiredOffer
 
 	err := r.DB.WithContext(ctx).Raw(`
-		SELECT rmo.id, rmo.request_id, rmo.sequence
-		FROM request_mitra_offers rmo
-		WHERE rmo.status_id = 1
-		  AND rmo.sent_at IS NOT NULL
-		  AND rmo.sent_at <= clock_timestamp() - (? * INTERVAL '1 second')
-		  AND rmo.sequence = (
-			  SELECT MIN(sequence)
-			  FROM request_mitra_offers
-			  WHERE request_id = rmo.request_id
-				AND status_id = 1
-		  )
+		SELECT id, request_id, sequence
+		FROM request_mitra_offers
+		WHERE status_id = 1
+		  AND sent_at IS NOT NULL
+		  AND sent_at <= clock_timestamp() - (? * INTERVAL '1 second')
 	`, timeoutSeconds).Scan(&offers).Error
 
 	return offers, err

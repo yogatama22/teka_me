@@ -220,34 +220,42 @@ func (h *Handler) GetMyServiceOrders(c *fiber.Ctx) error {
 func (h *Handler) GetCustomerCurrentOrder(c *fiber.Ctx) error {
 	customerID, _ := middleware.UserID(c)
 
-	order, err := h.Service.GetCurrentOrder(
+	order, err := h.Service.GetCustomerCurrentOrder(
 		c.Context(),
 		int64(customerID),
-		false,
 	)
 
 	if err != nil {
-		return c.JSON(fiber.Map{"data": nil})
+		return c.JSON(fiber.Map{
+			"message": "Belum ada pesanan aktif",
+		})
 	}
 
-	return c.JSON(fiber.Map{"data": order})
+	return c.JSON(fiber.Map{
+		"data":    order,
+		"message": "Pesanan aktif ditemukan",
+	})
 }
 
 // AKTIF ORDER MITRA
 func (h *Handler) GetMitraCurrentOrder(c *fiber.Ctx) error {
 	mitraID, _ := middleware.UserID(c)
 
-	order, err := h.Service.GetCurrentOrder(
+	order, err := h.Service.GetMitraCurrentOrder(
 		c.Context(),
 		int64(mitraID),
-		true,
 	)
 
 	if err != nil {
-		return c.JSON(fiber.Map{"data": nil})
+		return c.JSON(fiber.Map{
+			"message": "Belum ada pesanan aktif",
+		})
 	}
 
-	return c.JSON(fiber.Map{"data": order})
+	return c.JSON(fiber.Map{
+		"data":    order,
+		"message": "Pesanan aktif ditemukan",
+	})
 }
 
 // CompleteService dari dokter selesai service
