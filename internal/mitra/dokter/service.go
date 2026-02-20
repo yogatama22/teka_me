@@ -426,28 +426,35 @@ func (s *Service) RunOfferTimeoutWorker(ctx context.Context) {
 			// Ambil penawaran yang sudah 60 detik (1 menit) belum direspon
 			offers, err := s.Repo.GetExpiredOffers(ctx, 60)
 			if err != nil {
-				log.Println("timeout worker error:", err)
+				log.Println("❌ timeout worker error:", err)
 				continue
 			}
 
+			if len(offers) > 0 {
+				log.Printf("🔍 Worker found %d expired offers", len(offers))
+			}
+
 			for _, offer := range offers {
-				log.Printf("⏰ Offer %d expired for request %d, moving to next sequence...", offer.ID, offer.RequestID)
-				nextMitraID, err := s.Repo.TimeoutAndMoveNext(
+				log.Printf("⏰ Offer %d expired for request %d (Dokter: %s), moving to next sequence...",
+					offer.ID, offer.RequestID, offer.MitraName)
+
+				nextMitraID, nextMitraName, err := s.Repo.TimeoutAndMoveNext(
 					ctx,
 					offer.RequestID,
 					offer.Sequence,
 				)
 				if err != nil {
-					log.Println("process timeout error:", err)
+					log.Println("❌ process timeout error:", err)
 					continue
 				}
 
 				if nextMitraID != 0 {
-					log.Printf("🚀 Distributing request %d to next doctor: %d", offer.RequestID, nextMitraID)
+					log.Printf("🚀 Distributing request %d to Dokter selanjutnya: %s (%d)",
+						offer.RequestID, nextMitraName, nextMitraID)
 					// Push notif ke mitra selanjutnya
 					tokens, err := s.Repo.GetFCMTokensByUserID(ctx, nextMitraID)
 					if err != nil {
-						log.Println("FCM Error (worker):", err)
+						log.Println("❌ FCM Error (worker):", err)
 						continue
 					}
 

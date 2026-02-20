@@ -162,6 +162,7 @@ type ExpiredOffer struct {
 	ID        int64
 	RequestID int64
 	Sequence  int
+	MitraName string
 }
 
 type OfferAcceptData struct {
