@@ -19,7 +19,7 @@ func AuthRoutes(app *fiber.App) {
 		return c.JSON(fiber.Map{
 			"version": "v1.0.1",
 			"service": "teka-api",
-			"tanggal": "19-02-2026",
+			"tanggal": "20-02-2026",
 			// "keterangan": "web socket",
 		})
 	})
@@ -30,8 +30,6 @@ func AuthRoutes(app *fiber.App) {
 	auth.Post("/verify-otp", VerifyOtpController)
 	auth.Post("/login", LoginController)
 	auth.Post("/resend-otp", ResendOtpController)
-	auth.Post("/topup", middleware.JWTProtected(), TopUpHandler)
-	auth.Get("/transactions", middleware.JWTProtected(), TransactionHistoryHandler)
 
 	// PIN routes: /api/pin/... (protected)
 	pin := api.Group("/pin", middleware.JWTProtected())
@@ -51,4 +49,6 @@ func AuthRoutes(app *fiber.App) {
 
 	// ✅ REGISTER FCM TOKEN
 	user.Post("/fcm", RegisterFCM)
+	user.Post("/topup", TopUpHandler)
+	user.Get("/earnings", GetCustomerEarningsHistoryHandler)
 }

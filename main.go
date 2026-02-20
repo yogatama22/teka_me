@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -110,6 +111,9 @@ func main() {
 
 	// Realtime routes (WebSocket)
 	realtime.RegisterRoutes(app)
+
+	// 🔥 START DISPATCH WORKER
+	go dokterService.RunOfferTimeoutWorker(context.Background())
 
 	// Healthcheck
 	app.Get("/kaithheathcheck", func(c *fiber.Ctx) error {

@@ -130,6 +130,12 @@ func SendFCMToTokens(
 		if err != nil {
 			log.Println("❌ FCM failed:", err, "token:", token)
 			results[token] = err
+
+			// 🔥 Auto-Cleanup: Hapus token jika sudah tidak valid (404 / Not Found)
+			if messaging.IsRegistrationTokenNotRegistered(err) {
+				log.Printf("🧹 Cleaning up invalid token: %s", token)
+				_ = DeleteFCMToken(token)
+			}
 		} else {
 			log.Println("✅ FCM sent, messageID:", res, "token:", token)
 			results[token] = nil

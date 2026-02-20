@@ -424,7 +424,7 @@ func (r *Repository) GetOfferForAccept(
 	}
 
 	if o.OfferID == 0 {
-		return nil, errors.New("offer not valid")
+		return nil, errors.New("Maaf, waktu penawaran sudah habis")
 	}
 
 	return &o, nil
@@ -448,7 +448,7 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 	`, now, o.OfferID)
 	if res.RowsAffected == 0 {
 		tx.Rollback()
-		return errors.New("offer already processed")
+		return errors.New("Maaf, waktu penawaran sudah habis")
 	}
 
 	// 2️⃣ Cancel other offers
@@ -818,7 +818,7 @@ func (r *Repository) TimeoutAndMoveNext(
 	ctx context.Context,
 	requestID int64,
 	sequence int,
-) error {
+) (int64, error) {
 
 	tx := r.DB.WithContext(ctx).Begin()
 
@@ -832,25 +832,45 @@ func (r *Repository) TimeoutAndMoveNext(
 		  AND status_id = 1
 	`, requestID, sequence).Error; err != nil {
 		tx.Rollback()
-		return err
+		return 0, err
 	}
 
-	// 2. activate next offer (ONLY ONE)
-	res := tx.Exec(`
+	// 2. Cari next mitra_id
+	var next struct {
+		MitraID int64
+	}
+	err := tx.Raw(`
+		SELECT mitra_id
+		FROM request_mitra_offers
+		WHERE request_id = ? AND sequence = ? AND status_id = 6
+		LIMIT 1
+	`, requestID, sequence+1).Scan(&next).Error
+
+	if err != nil || next.MitraID == 0 {
+		// No more offers in queue
+		tx.Commit()
+		return 0, nil
+	}
+
+	// 3. activate next offer (ONLY ONE)
+	if err := tx.Exec(`
 		UPDATE request_mitra_offers
 		SET status_id = 1,
 		    sent_at = NOW()
 		WHERE request_id = ?
+		  LIMIT 1
 		  AND sequence = ?
-		  AND status_id = 5
-	`, requestID, sequence+1)
-
-	if res.Error != nil {
+		  AND status_id = 6
+	`, requestID, sequence+1).Error; err != nil {
 		tx.Rollback()
-		return res.Error
+		return 0, err
 	}
 
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return 0, err
+	}
+
+	return next.MitraID, nil
 }
 
 func (r *Repository) GetServiceForRating(
@@ -1134,22 +1154,18 @@ func (r *Repository) DeductCustomerBalance(
 
 	// 3. Insert mutation ke saldo_role_transactions
 	newSaldo := latestSaldo - intAmount
-	const (
-		CategoryOrderPayment = "order_payment"
-	)
 
-	if err := tx.Exec(`
-    INSERT INTO myschema.saldo_role_transactions (
-        user_id, transaction_no, category, amount, saldo_setelah, description, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-`,
-		customerID,
-		orderNo,
-		CategoryOrderPayment,
-		intAmount,
-		newSaldo,
-		"Pembayaran order Dokter",
-	).Error; err != nil {
+	trx := &models.SaldoTransaction{
+		UserID:        uint(customerID),
+		TransactionNo: orderNo,
+		CategoryID:    2, // Order Payment
+		Amount:        intAmount,
+		SaldoSetelah:  newSaldo,
+		Description:   "Pembayaran order Dokter",
+		CreatedAt:     time.Now(),
+	}
+
+	if err := tx.Create(trx).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -1338,10 +1354,10 @@ func (r *Repository) GetMitraRatingSummary(ctx context.Context, mitraID int64) (
 	return summary, err
 }
 
-func (r *Repository) GetMitraRatingHistory(ctx context.Context, mitraID int64) ([]models.DayHistory, error) {
+func (r *Repository) GetMitraRatingHistory(ctx context.Context, mitraID int64) ([]models.MonthlyRatingHistory, error) {
 	var results []models.MitraRating
 
-	// Fetch all ratings for the current month with customer name snapshot
+	// Fetch all ratings for history (removed current month filter)
 	err := r.DB.WithContext(ctx).Raw(`
 		SELECT 
 			mr.id, mr.service_order_id, mr.mitra_id, mr.customer_id, 
@@ -1350,7 +1366,6 @@ func (r *Repository) GetMitraRatingHistory(ctx context.Context, mitraID int64) (
 		FROM myschema.mitra_ratings mr
 		JOIN myschema.service_orders so ON so.id = mr.service_order_id
 		WHERE mr.mitra_id = ? 
-		  AND DATE_TRUNC('month', mr.created_at) = DATE_TRUNC('month', CURRENT_DATE)
 		ORDER BY mr.created_at DESC
 	`, mitraID).Scan(&results).Error
 
@@ -1358,26 +1373,46 @@ func (r *Repository) GetMitraRatingHistory(ctx context.Context, mitraID int64) (
 		return nil, err
 	}
 
-	// Group by date in Go
-	historyMap := make(map[string][]models.MitraRating)
-	var dates []string
+	// Group by month and year in Go
+	type groupKey struct {
+		Month string
+		Year  string
+	}
+	historyMap := make(map[groupKey][]models.MitraRating)
+	var keys []groupKey
 
 	for _, res := range results {
-		// PostgreSQL TO_CHAR or go time formatting?
-		// results has type string for CreatedAt, but let's assume it has the date
-		// Actually, let's fix the model if needed, but for now let's just use the string prefix if it follows YYYY-MM-DD
-		date := res.CreatedAt[:10] // Simple date extraction
-		if _, exists := historyMap[date]; !exists {
-			dates = append(dates, date)
+		// res.CreatedAt format: 2026-02-17T14:22:35.605869Z
+		t, err := time.Parse(time.RFC3339, res.CreatedAt)
+		if err != nil {
+			// Fallback to simple extraction if parsing fails
+			if len(res.CreatedAt) >= 7 {
+				year := res.CreatedAt[0:4]
+				month := res.CreatedAt[5:7]
+				key := groupKey{Month: month, Year: year}
+				if _, exists := historyMap[key]; !exists {
+					keys = append(keys, key)
+				}
+				historyMap[key] = append(historyMap[key], res)
+			}
+			continue
 		}
-		historyMap[date] = append(historyMap[date], res)
+
+		month := t.Format("01")
+		year := t.Format("2006")
+		key := groupKey{Month: month, Year: year}
+		if _, exists := historyMap[key]; !exists {
+			keys = append(keys, key)
+		}
+		historyMap[key] = append(historyMap[key], res)
 	}
 
-	var history []models.DayHistory
-	for _, date := range dates {
-		history = append(history, models.DayHistory{
-			Date:    date,
-			Ratings: historyMap[date],
+	var history []models.MonthlyRatingHistory
+	for _, key := range keys {
+		history = append(history, models.MonthlyRatingHistory{
+			Month:   key.Month,
+			Year:    key.Year,
+			Ratings: historyMap[key],
 		})
 	}
 
@@ -1394,7 +1429,7 @@ func (r *Repository) GetMitraOrderSummary(ctx context.Context, mitraID int64) (m
 	return summary, err
 }
 
-func (r *Repository) GetMitraOrderHistory(ctx context.Context, mitraID int64) ([]models.OrderDayHistory, error) {
+func (r *Repository) GetMitraOrderHistory(ctx context.Context, mitraID int64) ([]models.MonthlyOrderHistory, error) {
 	var rows []activeServiceOrderRow
 
 	err := r.DB.WithContext(ctx).Raw(`
@@ -1422,7 +1457,6 @@ func (r *Repository) GetMitraOrderHistory(ctx context.Context, mitraID int64) ([
 			ON sos.id = so.status_id
 		WHERE so.mitra_id = ? 
 		  AND so.status_id = 6
-		  AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
 		ORDER BY so.created_at DESC
 	`, mitraID).Scan(&rows).Error
 
@@ -1430,23 +1464,30 @@ func (r *Repository) GetMitraOrderHistory(ctx context.Context, mitraID int64) ([
 		return nil, err
 	}
 
-	// Group by date in Go
-	historyMap := make(map[string][]models.ActiveServiceOrder)
-	var dates []string
+	// Group by month and year in Go
+	type groupKey struct {
+		Month string
+		Year  string
+	}
+	historyMap := make(map[groupKey][]models.ActiveServiceOrder)
+	var keys []groupKey
 
 	for _, row := range rows {
-		date := row.CreatedAt.Format("2006-01-02")
-		if _, exists := historyMap[date]; !exists {
-			dates = append(dates, date)
+		month := row.CreatedAt.Format("01")
+		year := row.CreatedAt.Format("2006")
+		key := groupKey{Month: month, Year: year}
+		if _, exists := historyMap[key]; !exists {
+			keys = append(keys, key)
 		}
-		historyMap[date] = append(historyMap[date], *mapActiveServiceOrder(row))
+		historyMap[key] = append(historyMap[key], *mapActiveServiceOrder(row))
 	}
 
-	var history []models.OrderDayHistory
-	for _, date := range dates {
-		history = append(history, models.OrderDayHistory{
-			Date:   date,
-			Orders: historyMap[date],
+	var history []models.MonthlyOrderHistory
+	for _, key := range keys {
+		history = append(history, models.MonthlyOrderHistory{
+			Month:  key.Month,
+			Year:   key.Year,
+			Orders: historyMap[key],
 		})
 	}
 
@@ -1458,14 +1499,16 @@ func (r *Repository) GetMitraEarningsHistory(ctx context.Context, mitraID int64)
 
 	err := r.DB.WithContext(ctx).Raw(`
 		SELECT 
-			transaction_no,
-			amount,
-			description,
-			created_at
-		FROM myschema.saldo_role_transactions
-		WHERE user_id = ? 
-		  AND category = 'income'
-		ORDER BY created_at DESC
+			srt.transaction_no,
+			srt.amount,
+			srt.description,
+			stc.code as category_name,
+			srt.created_at
+		FROM myschema.saldo_role_transactions srt
+		JOIN myschema.saldo_transaction_categories stc ON stc.id = srt.category_id
+		WHERE srt.user_id = ? 
+		  AND srt.category_id IN (3, 4)
+		ORDER BY srt.created_at DESC
 	`, mitraID).Scan(&rows).Error
 
 	if err != nil {
@@ -1503,4 +1546,20 @@ func (r *Repository) GetMitraEarningsHistory(ctx context.Context, mitraID int64)
 		TotalAmount: totalMonthly,
 		History:     history,
 	}, nil
+}
+
+// GetOrderCustomerInfo retrieves customer ID and order number for a specific order
+func (r *Repository) GetOrderCustomerInfo(ctx context.Context, orderID int) (customerID int64, orderNumber string, err error) {
+	var row struct {
+		CustomerID  int64
+		OrderNumber string
+	}
+
+	err = r.DB.WithContext(ctx).Raw(`
+		SELECT customer_id, order_number 
+		FROM myschema.service_orders 
+		WHERE id = ?
+	`, orderID).Scan(&row).Error
+
+	return row.CustomerID, row.OrderNumber, err
 }
