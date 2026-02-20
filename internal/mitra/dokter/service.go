@@ -249,14 +249,22 @@ func (s *Service) GetCustomerServiceOrders(
 	return s.Repo.GetCustomerServiceOrders(ctx, customerID)
 }
 
-// AKTIF ORDER
-func (s *Service) GetCurrentOrder(
+// GET CUSTOMER CURRENT ORDER
+func (s *Service) GetCustomerCurrentOrder(
 	ctx context.Context,
-	userID int64,
-	isMitra bool,
+	customerID int64,
 ) (*models.ActiveServiceOrder, error) {
 
-	return s.Repo.GetActiveServiceOrder(ctx, userID, isMitra)
+	return s.Repo.GetActiveServiceOrderForCustomer(ctx, customerID)
+}
+
+// GET MITRA CURRENT ORDER
+func (s *Service) GetMitraCurrentOrder(
+	ctx context.Context,
+	mitraID int64,
+) (*models.ActiveServiceOrder, error) {
+
+	return s.Repo.GetActiveServiceOrderForMitra(ctx, mitraID)
 }
 
 // Complete service
