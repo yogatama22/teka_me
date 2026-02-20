@@ -331,18 +331,14 @@ func (r *Repository) CreateOffers(
 		}
 	}()
 
-	now := time.Now()
-
 	for i, d := range doctors {
-		var (
-			statusID int16
-			sentAt   *time.Time
-		)
+		var statusID int16
+		var sentAt interface{}
 
 		if i == 0 {
 			// offer pertama langsung dikirim
 			statusID = 1 // waiting
-			sentAt = &now
+			sentAt = gorm.Expr("NOW()")
 		} else {
 			// sisanya ANTRI
 			statusID = 6 // pending
@@ -437,18 +433,17 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 ) error {
 
 	tx := r.DB.WithContext(ctx).Begin()
-	now := time.Now()
 
 	// 1️⃣ Accept offer
 	res := tx.Exec(`
 		UPDATE request_mitra_offers
 		SET status_id = 2,
-		    responded_at = ?
+		    responded_at = NOW()
 		WHERE id = ? AND status_id = 1
-	`, now, o.OfferID)
+	`, o.OfferID)
 	if res.RowsAffected == 0 {
 		tx.Rollback()
-		return errors.New("Maaf, waktu penawaran sudah habis")
+		return errors.New("Maaf, waktu penawaran sudah habis atau sudah diambil dokter lain")
 	}
 
 	// 2️⃣ Cancel other offers
@@ -466,9 +461,9 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 		UPDATE customer_requests
 		SET status_id = 2,
 		    matched_mitra_id = ?,
-		    matched_at = ?
+		    matched_at = NOW()
 		WHERE id = ? AND status_id = 1
-	`, o.MitraID, now, o.RequestID).Error; err != nil {
+	`, o.MitraID, o.RequestID).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -513,7 +508,7 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 			?, ?, ?, ?,
 			?, ?,
 			1,
-			?, ?, ?, ?
+			NOW(), NOW(), NOW(), NOW()
 		)
 		RETURNING id, created_at
 	`,
@@ -537,11 +532,6 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 
 		o.Price,
 		o.VoucherID,
-
-		now,
-		now,
-		now,
-		now,
 	).Row().Scan(&orderID, &createdAt); err != nil {
 		tx.Rollback()
 		return err
@@ -834,11 +824,12 @@ func (r *Repository) GetExpiredOffers(
 	var offers []models.ExpiredOffer
 
 	err := r.DB.WithContext(ctx).Raw(`
-		SELECT id, request_id, sequence
-		FROM request_mitra_offers
-		WHERE status_id = 1
-		  AND sent_at IS NOT NULL
-		  AND sent_at <= clock_timestamp() - (? * INTERVAL '1 second')
+		SELECT o.id, o.request_id, o.sequence, u.nama as mitra_name
+		FROM request_mitra_offers o
+		JOIN users u ON u.id = o.mitra_id
+		WHERE o.status_id = 1
+		  AND o.sent_at IS NOT NULL
+		  AND o.sent_at <= clock_timestamp() - (? * INTERVAL '1 second')
 	`, timeoutSeconds).Scan(&offers).Error
 
 	return offers, err
@@ -848,7 +839,7 @@ func (r *Repository) TimeoutAndMoveNext(
 	ctx context.Context,
 	requestID int64,
 	sequence int,
-) (int64, error) {
+) (int64, string, error) {
 
 	tx := r.DB.WithContext(ctx).Begin()
 
@@ -862,24 +853,26 @@ func (r *Repository) TimeoutAndMoveNext(
 		  AND status_id = 1
 	`, requestID, sequence).Error; err != nil {
 		tx.Rollback()
-		return 0, err
+		return 0, "", err
 	}
 
-	// 2. Cari next mitra_id
+	// 2. Cari next mitra_id & name
 	var next struct {
 		MitraID int64
+		Nama    string `gorm:"column:nama"`
 	}
 	err := tx.Raw(`
-		SELECT mitra_id
-		FROM request_mitra_offers
-		WHERE request_id = ? AND sequence = ? AND status_id = 6
+		SELECT o.mitra_id, u.nama
+		FROM request_mitra_offers o
+		JOIN users u ON u.id = o.mitra_id
+		WHERE o.request_id = ? AND o.sequence = ? AND o.status_id = 6
 		LIMIT 1
 	`, requestID, sequence+1).Scan(&next).Error
 
 	if err != nil || next.MitraID == 0 {
 		// No more offers in queue
 		tx.Commit()
-		return 0, nil
+		return 0, "", nil
 	}
 
 	// 3. activate next offer (ONLY ONE)
@@ -888,19 +881,18 @@ func (r *Repository) TimeoutAndMoveNext(
 		SET status_id = 1,
 		    sent_at = NOW()
 		WHERE request_id = ?
-		  LIMIT 1
 		  AND sequence = ?
 		  AND status_id = 6
 	`, requestID, sequence+1).Error; err != nil {
 		tx.Rollback()
-		return 0, err
+		return 0, "", err
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
-	return next.MitraID, nil
+	return next.MitraID, next.Nama, nil
 }
 
 func (r *Repository) GetServiceForRating(
