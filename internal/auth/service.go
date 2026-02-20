@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -115,7 +116,7 @@ func TopUpBalance(userID uint, amount int64) error {
 		trx := &models.SaldoTransaction{
 			UserID:        userID,
 			TransactionNo: trxNo,
-			Category:      "topup",
+			CategoryID:    1,
 			Amount:        amount,
 			SaldoSetelah:  newSaldo,
 			Description:   "Topup saldo customer",
@@ -128,4 +129,7 @@ func TopUpBalance(userID uint, amount int64) error {
 
 func GetTransactions(userID uint) ([]models.SaldoTransaction, error) {
 	return GetTransactionHistory(userID)
+}
+func GetCustomerEarningsHistory(ctx context.Context, userID uint) (models.EarningMonthlyHistory, error) {
+	return GetCustomerEarningsHistoryFromDB(ctx, userID)
 }

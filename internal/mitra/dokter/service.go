@@ -209,7 +209,7 @@ func (s *Service) GetCurrentOffer(
 	offer, err := s.Repo.GetCurrentOfferForMitra(ctx, mitraID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, errors.New("no active offer")
+			return nil, errors.New("Maaf, waktu penawaran sudah habis")
 		}
 		return nil, err
 	}
@@ -354,7 +354,7 @@ func (s *Service) GetRatingSummary(ctx context.Context, mitraID int64) (models.R
 	return s.Repo.GetMitraRatingSummary(ctx, mitraID)
 }
 
-func (s *Service) GetRatingHistory(ctx context.Context, mitraID int64) ([]models.DayHistory, error) {
+func (s *Service) GetRatingHistory(ctx context.Context, mitraID int64) ([]models.MonthlyRatingHistory, error) {
 	return s.Repo.GetMitraRatingHistory(ctx, mitraID)
 }
 
@@ -362,11 +362,11 @@ func (s *Service) GetOrderSummary(ctx context.Context, mitraID int64) (models.Or
 	return s.Repo.GetMitraOrderSummary(ctx, mitraID)
 }
 
-func (s *Service) GetOrderHistory(ctx context.Context, mitraID int64) ([]models.OrderDayHistory, error) {
+func (s *Service) GetOrderHistory(ctx context.Context, mitraID int64) ([]models.MonthlyOrderHistory, error) {
 	return s.Repo.GetMitraOrderHistory(ctx, mitraID)
 }
 
-func (s *Service) GetEarningsHistory(ctx context.Context, mitraID int64) (models.EarningMonthlyHistory, error) {
+func (s *Service) GetMitraEarningsHistory(ctx context.Context, mitraID int64) (models.EarningMonthlyHistory, error) {
 	return s.Repo.GetMitraEarningsHistory(ctx, mitraID)
 }
 
@@ -407,35 +407,83 @@ func (s *Service) GetActiveVoucher(ctx context.Context, userID int64) ([]models.
 
 // WORKER
 func (s *Service) RunOfferTimeoutWorker(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second) // cek tiap 3 detik
+	ticker := time.NewTicker(5 * time.Second) // cek tiap 5 detik
 	defer ticker.Stop()
+
+	log.Println("👷 Offer Timeout Worker started")
 
 	for {
 		select {
 		case <-ticker.C:
-			offers, err := s.Repo.GetExpiredOffers(ctx, 10)
+			// Ambil penawaran yang sudah 60 detik (1 menit) belum direspon
+			offers, err := s.Repo.GetExpiredOffers(ctx, 60)
 			if err != nil {
 				log.Println("timeout worker error:", err)
 				continue
 			}
 
 			for _, offer := range offers {
-				err := s.Repo.TimeoutAndMoveNext(
+				log.Printf("⏰ Offer %d expired for request %d, moving to next sequence...", offer.ID, offer.RequestID)
+				nextMitraID, err := s.Repo.TimeoutAndMoveNext(
 					ctx,
 					offer.RequestID,
 					offer.Sequence,
 				)
 				if err != nil {
 					log.Println("process timeout error:", err)
+					continue
+				}
+
+				if nextMitraID != 0 {
+					log.Printf("🚀 Distributing request %d to next doctor: %d", offer.RequestID, nextMitraID)
+					// Push notif ke mitra selanjutnya
+					tokens, err := s.Repo.GetFCMTokensByUserID(ctx, nextMitraID)
+					if err != nil {
+						log.Println("FCM Error (worker):", err)
+						continue
+					}
+
+					if len(tokens) > 0 {
+						go func(tks []string, mID int64, rID int64) {
+							fcmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+							defer cancel()
+
+							results := firebase.SendFCMToTokens(
+								fcmCtx,
+								tks,
+								"Ada Orderan Baru 🚨",
+								"Ada customer membutuhkan layanan kamu",
+								map[string]string{
+									"type":       "NEW_ORDER",
+									"request_id": strconv.FormatInt(rID, 10),
+								},
+							)
+
+							for token, err := range results {
+								status := "SENT"
+								var errStr *string
+								if err != nil {
+									status = "FAILED"
+									s := err.Error()
+									errStr = &s
+								}
+								_ = s.Repo.LogFCMResult(mID, token, status, errStr)
+							}
+						}(tokens, nextMitraID, offer.RequestID)
+					}
+				} else {
+					log.Printf("🏁 Request %d reached end of queue or no more offers.", offer.RequestID)
 				}
 			}
 
 		case <-ctx.Done():
+			log.Println("👷 Offer Timeout Worker stopped")
 			return
 		}
 	}
 }
 
+// allowedTransitions: status order yang boleh diubah
 var allowedTransitions = map[int16][]int16{
 	1: {2, 5},
 	2: {3, 5, 6},
@@ -443,6 +491,7 @@ var allowedTransitions = map[int16][]int16{
 	4: {6},
 }
 
+// UpdateServiceOrderStatus: mitra update status order
 func (s *Service) UpdateServiceOrderStatus(
 	ctx context.Context,
 	orderID int,
@@ -494,6 +543,50 @@ func (s *Service) UpdateServiceOrderStatus(
 	// 🛡️ DELETE CHAT HISTORY IF FINALIZED (4: COMPLETED_BY_MITRA, 5: CANCELLED, 6: FINISHED)
 	if newStatusID == 5 || newStatusID == 6 {
 		redis.Rdb.Del(ctx, fmt.Sprintf("order_chat:%d", orderID))
+	}
+
+	// 🔔 NOTIFIKASI FCM
+	if newStatusID == 2 || newStatusID == 3 {
+		go func(oID int, sID int16) {
+			fcmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			customerID, orderNo, err := s.Repo.GetOrderCustomerInfo(fcmCtx, oID)
+			if err != nil {
+				log.Printf("FCM: failed to get customer info for order %d: %v", oID, err)
+				return
+			}
+
+			tokens, err := firebase.GetFCMTokensByUserID(uint(customerID))
+			if err != nil || len(tokens) == 0 {
+				log.Printf("FCM: no tokens found for customer %d", customerID)
+				return
+			}
+
+			title := "Dokter OTW 🏎️"
+			body := fmt.Sprintf("Dokter sedang menuju lokasi untuk order %s", orderNo)
+			if sID == 3 {
+				title = "Dokter Sampai 🏁"
+				body = fmt.Sprintf("Dokter sudah sampai di lokasi untuk order %s", orderNo)
+			}
+
+			results := firebase.SendFCMToTokens(fcmCtx, tokens, title, body, map[string]string{
+				"type":     "ORDER_STATUS_UPDATE",
+				"order_id": strconv.Itoa(oID),
+				"status":   strconv.Itoa(int(sID)),
+			})
+
+			for token, err := range results {
+				status := "SENT"
+				var errStr *string
+				if err != nil {
+					status = "FAILED"
+					s := err.Error()
+					errStr = &s
+				}
+				_ = s.Repo.LogFCMResult(customerID, token, status, errStr)
+			}
+		}(orderID, newStatusID)
 	}
 
 	return nil

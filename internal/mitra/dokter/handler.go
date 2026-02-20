@@ -128,8 +128,6 @@ func (h *Handler) SearchDoctor(c *fiber.Ctx) error {
 	})
 }
 
-// END CUSTOMER SEARCH DOKTER
-
 // -------------------------------
 // CANCEL ORDERAN
 // -------------------------------
@@ -382,6 +380,7 @@ func (c *Handler) GetVoucherHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(vouchers)
 }
 
+// UpdateServiceOrderStatus: mitra update status order
 func (h *Handler) UpdateServiceOrderStatus(c *fiber.Ctx) error {
 	orderID, err := strconv.Atoi(c.Params("id"))
 	if err != nil {
@@ -491,6 +490,7 @@ func (h *Handler) GetOrderHistory(c *fiber.Ctx) error {
 	})
 }
 
+// GetMitraBalance: mitra melihat saldo
 func (h *Handler) GetMitraBalance(c *fiber.Ctx) error {
 	mitraIDCtx, err := middleware.UserID(c)
 	if err != nil {
@@ -508,6 +508,7 @@ func (h *Handler) GetMitraBalance(c *fiber.Ctx) error {
 	})
 }
 
+// Withdraw: mitra minta penarikan saldo
 func (h *Handler) Withdraw(c *fiber.Ctx) error {
 	mitraIDCtx, err := middleware.UserID(c)
 	if err != nil {
@@ -529,14 +530,15 @@ func (h *Handler) Withdraw(c *fiber.Ctx) error {
 	})
 }
 
-func (h *Handler) GetEarningsHistory(c *fiber.Ctx) error {
+// GetMitraEarningsHistory: mitra melihat riwayat penarikan saldo
+func (h *Handler) GetMitraEarningsHistory(c *fiber.Ctx) error {
 	mitraIDCtx, err := middleware.UserID(c)
 	if err != nil {
 		return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
 	}
 	mitraID := int64(mitraIDCtx)
 
-	history, err := h.Service.GetEarningsHistory(c.Context(), mitraID)
+	history, err := h.Service.GetMitraEarningsHistory(c.Context(), mitraID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}

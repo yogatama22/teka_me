@@ -10,6 +10,12 @@ type DayHistory struct {
 	Ratings []MitraRating `json:"ratings"`
 }
 
+type MonthlyRatingHistory struct {
+	Month   string        `json:"month"`
+	Year    string        `json:"year"`
+	Ratings []MitraRating `json:"ratings"`
+}
+
 type MitraRating struct {
 	ID             int64  `gorm:"primaryKey" json:"id"`
 	ServiceOrderID int64  `json:"service_order_id"`

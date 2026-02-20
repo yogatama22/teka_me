@@ -425,16 +425,15 @@ func TopUpHandler(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Top up successful"})
 }
 
-// ========= TRANSACTION HISTORY ========= \\
-func TransactionHistoryHandler(c *fiber.Ctx) error {
+
+//  customer melihat riwayat penarikan/transaksi saldo (cat 1 & 2)
+func GetCustomerEarningsHistoryHandler(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(uint)
 
-	history, err := GetTransactions(userID)
+	history, err := GetCustomerEarningsHistory(c.Context(), userID)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to get transaction history"})
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.JSON(fiber.Map{
-		"history": history,
-	})
+	return c.JSON(history)
 }

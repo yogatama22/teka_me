@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"teka-api/internal/models"
 	"teka-api/pkg/database"
@@ -139,4 +140,57 @@ func GetTransactionHistory(userID uint) ([]models.SaldoTransaction, error) {
 		Order("created_at DESC").
 		Find(&results).Error
 	return results, err
+}
+func GetCustomerEarningsHistoryFromDB(ctx context.Context, userID uint) (models.EarningMonthlyHistory, error) {
+	var rows []models.IncomeDetail
+
+	err := database.DB.WithContext(ctx).Raw(`
+		SELECT 
+			srt.transaction_no,
+			srt.amount,
+			srt.description,
+			stc.code as category_name,
+			srt.created_at
+		FROM myschema.saldo_role_transactions srt
+		JOIN myschema.saldo_transaction_categories stc ON stc.id = srt.category_id
+		WHERE srt.user_id = ? 
+		  AND srt.category_id IN (1, 2)
+		ORDER BY srt.created_at DESC
+	`, userID).Scan(&rows).Error
+
+	if err != nil {
+		return models.EarningMonthlyHistory{}, err
+	}
+
+	// Group by month/year in Go
+	groupMap := make(map[string]*models.EarningMonthGroup)
+	var keys []string
+	var totalMonthly int64
+
+	for _, row := range rows {
+		month := row.CreatedAt.Format("01")
+		year := row.CreatedAt.Format("2006")
+		key := year + "-" + month
+
+		if _, exists := groupMap[key]; !exists {
+			keys = append(keys, key)
+			groupMap[key] = &models.EarningMonthGroup{
+				Month: month,
+				Year:  year,
+			}
+		}
+		groupMap[key].Items = append(groupMap[key].Items, row)
+		groupMap[key].MonthlyTotal += row.Amount
+		totalMonthly += row.Amount
+	}
+
+	var history []models.EarningMonthGroup
+	for _, key := range keys {
+		history = append(history, *groupMap[key])
+	}
+
+	return models.EarningMonthlyHistory{
+		TotalAmount: totalMonthly,
+		History:     history,
+	}, nil
 }
