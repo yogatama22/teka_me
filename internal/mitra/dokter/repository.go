@@ -1156,6 +1156,7 @@ func (r *Repository) DeductCustomerBalance(
 		FROM myschema.saldo_role_transactions 
 		WHERE user_id = ? 
 		ORDER BY id DESC 
+		LIMIT 1
 		FOR UPDATE
 	`, customerID).Scan(&latestSaldo).Error
 
@@ -1179,7 +1180,9 @@ func (r *Repository) DeductCustomerBalance(
 
 	trx := &models.SaldoTransaction{
 		UserID:        uint(customerID),
-		TransactionNo: orderNo,
+		ReferenceID:   orderNo,
+		ReferenceType: "ORDER",
+		MutationType:  "OUT",
 		CategoryID:    2, // Order Payment
 		Amount:        intAmount,
 		SaldoSetelah:  newSaldo,
@@ -1210,7 +1213,7 @@ func (r *Repository) DeductCustomerBalance(
 	res := tx.Exec(`
 		UPDATE myschema.service_orders
 		SET status_id = 6, updated_at = NOW()
-		WHERE id = ? AND customer_id = ? AND status_id =4
+		WHERE id = ? AND customer_id = ? AND status_id = 4
 	`, orderID, customerID)
 
 	if res.Error != nil {
@@ -1231,7 +1234,7 @@ func (r *Repository) DeductCustomerBalance(
 		return errors.New("order tidak ditemukan atau status tidak valid untuk diselesaikan")
 	}
 
-	// 6. Record Mitra Income
+	// 6. Record Mitra Income (Simplified)
 	var trans struct {
 		MitraID     int64
 		MitraIncome float64
@@ -1254,6 +1257,7 @@ func (r *Repository) DeductCustomerBalance(
 		FROM myschema.saldo_role_transactions 
 		WHERE user_id = ? 
 		ORDER BY id DESC 
+		LIMIT 1
 		FOR UPDATE
 	`, trans.MitraID).Scan(&mitraLatestSaldo).Error
 
@@ -1263,20 +1267,24 @@ func (r *Repository) DeductCustomerBalance(
 		return err
 	}
 
-	mitraIncomeInt := int64(amount)
+	mitraIncomeInt := int64(trans.MitraIncome)
+	// Jika mitra_income 0 (misal belum terisi), fallback ke amount (bruto)
+	if mitraIncomeInt == 0 {
+		mitraIncomeInt = intAmount
+	}
 	mitraNewSaldo := mitraLatestSaldo + mitraIncomeInt
 
-	if err := tx.Exec(`
-		INSERT INTO myschema.saldo_role_transactions (
-			user_id, transaction_no, category, amount, saldo_setelah, description, created_at
-		) VALUES (?, ?, 'income', ?, ?, ?, NOW())
-	`,
-		trans.MitraID,
-		orderNo,
-		mitraIncomeInt,
-		mitraNewSaldo,
-		"Pendapatan order Dokter",
-	).Error; err != nil {
+	if err := tx.Create(&models.SaldoTransaction{
+		UserID:        uint(trans.MitraID),
+		ReferenceID:   orderNo,
+		ReferenceType: "ORDER",
+		MutationType:  "IN",
+		CategoryID:    3, // Pendapatan
+		Amount:        mitraIncomeInt,
+		SaldoSetelah:  mitraNewSaldo,
+		Description:   "Pendapatan order Dokter",
+		CreatedAt:     time.Now(),
+	}).Error; err != nil {
 		log.Printf("[DeductCustomerBalance] Error inserting mitra income: %v", err)
 		tx.Rollback()
 		return err
@@ -1346,8 +1354,8 @@ func (r *Repository) RequestWithdrawal(
 	newSaldo := latestSaldo - amount
 	if err := tx.Exec(`
 		INSERT INTO myschema.saldo_role_transactions (
-			user_id, transaction_no, category, amount, saldo_setelah, description, created_at
-		) VALUES (?, ?, 'withdrawal', ?, ?, ?, NOW())
+			user_id, reference_id, reference_type, mutation_type, category_id, amount, saldo_setelah, description, created_at
+		) VALUES (?, ?, 'WITHDRAWAL', 'OUT', 4, ?, ?, ?, NOW())
 	`,
 		mitraID,
 		transactionNo,
@@ -1521,7 +1529,7 @@ func (r *Repository) GetMitraEarningsHistory(ctx context.Context, mitraID int64)
 
 	err := r.DB.WithContext(ctx).Raw(`
 		SELECT 
-			srt.transaction_no,
+			srt.reference_id as transaction_no,
 			srt.amount,
 			srt.description,
 			stc.code as category_name,
