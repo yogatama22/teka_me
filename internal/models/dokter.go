@@ -60,6 +60,8 @@ type CustomerRequest struct {
 	VoucherID        *int64
 	VoucherCode      *string
 	VoucherValue     *float64
+	PlatformFee      float64
+	THRBonus         float64
 	Status           string
 }
 
@@ -183,6 +185,9 @@ type OfferAcceptData struct {
 	MitraLongitude    float64
 	Price             float64
 	VoucherID         *int64
+	PlatformFee       float64
+	THRBonus          float64
+	VoucherValue      float64
 }
 
 type RequestMitraOffer struct {
@@ -267,13 +272,9 @@ type OrderTransaction struct {
 }
 
 type CompleteOrderRequest struct {
-	OrderID       int64    `json:"-"`
-	Subtotal      float64  `json:"subtotal"`
-	Discount      float64  `json:"discount"`
-	PlatformFee   float64  `json:"platform_fee"`
-	PaymentMethod string   `json:"payment_method"`
-	Note          string   `json:"note"`
-	Attachments   []string `json:"attachments"`
+	OrderID     int64    `json:"-"`
+	Note        string   `json:"note"`
+	Attachments []string `json:"attachments"`
 }
 
 type ChatMessage struct {
