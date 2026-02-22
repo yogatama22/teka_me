@@ -292,3 +292,10 @@ type FCMLog struct {
 	Error     string    `json:"error,omitempty"`
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
 }
+type LocationUpdate struct {
+	Type    string  `json:"type"` // location_update
+	OrderID int64   `json:"order_id"`
+	Lat     float64 `json:"lat"`
+	Lng     float64 `json:"lng"`
+	Sender  string  `json:"sender"` // mitra
+}

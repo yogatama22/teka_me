@@ -1593,3 +1593,12 @@ func (r *Repository) GetOrderCustomerInfo(ctx context.Context, orderID int) (cus
 
 	return row.CustomerID, row.OrderNumber, err
 }
+
+// UpdateOrderLocation updates the mitra's current location in service_orders
+func (r *Repository) UpdateOrderLocation(ctx context.Context, orderID int64, lat, lng float64) error {
+	return r.DB.WithContext(ctx).Exec(`
+		UPDATE service_orders 
+		SET mitra_latitude = ?, mitra_longitude = ?, updated_at = NOW() 
+		WHERE id = ?
+	`, lat, lng, orderID).Error
+}
