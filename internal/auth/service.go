@@ -115,7 +115,9 @@ func TopUpBalance(userID uint, amount int64) error {
 		// 4. Insert transaction
 		trx := &models.SaldoTransaction{
 			UserID:        userID,
-			TransactionNo: trxNo,
+			ReferenceType: "TOPUP",
+			ReferenceID:   trxNo,
+			MutationType:  "IN",
 			CategoryID:    1,
 			Amount:        amount,
 			SaldoSetelah:  newSaldo,

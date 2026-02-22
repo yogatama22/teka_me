@@ -146,7 +146,7 @@ func GetCustomerEarningsHistoryFromDB(ctx context.Context, userID uint) (models.
 
 	err := database.DB.WithContext(ctx).Raw(`
 		SELECT 
-			srt.transaction_no,
+			srt.reference_id as transaction_no,
 			srt.amount,
 			srt.description,
 			stc.code as category_name,
