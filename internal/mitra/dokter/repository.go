@@ -199,35 +199,31 @@ func (r *Repository) CreateCustomerRequest(
 
 	var id int64
 
-	err := r.DB.WithContext(ctx).
-		Raw(`
-			INSERT INTO customer_requests (
-				customer_id,
-				job_category_id,
-				job_sub_category_id,
-				keluhan,
-				latitude,
-				longitude,
-				radius,
-				price,
-				voucher_id,
-				status_id
-			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?)
-			RETURNING id
-		`,
-			req.CustomerID,
-			req.JobCategoryID,
-			req.JobSubCategoryID,
-			req.Keluhan,
-			req.Latitude,
-			req.Longitude,
-			req.Radius,
-			req.Price,
-			req.VoucherID,
-			1,
-		).
-		Scan(&id).Error
+	query := `
+		INSERT INTO customer_requests (
+			customer_id, job_category_id, job_sub_category_id, 
+			keluhan, latitude, longitude, radius, price, 
+			voucher_id, voucher_value, platform_fee, thr_bonus,
+			status_id, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, NOW(), NOW())
+		RETURNING id
+	`
+
+	err := r.DB.WithContext(ctx).Raw(
+		query,
+		req.CustomerID,
+		req.JobCategoryID,
+		req.JobSubCategoryID,
+		req.Keluhan,
+		req.Latitude,
+		req.Longitude,
+		req.Radius,
+		req.Price,
+		req.VoucherID,
+		req.VoucherValue,
+		req.PlatformFee,
+		req.THRBonus,
+	).Scan(&id).Error
 
 	return id, err
 }
@@ -404,7 +400,10 @@ func (r *Repository) GetOfferForAccept(
 		md.longitude AS mitra_longitude,
 
 		r.price,
-		r.voucher_id
+		r.voucher_id,
+		r.platform_fee,
+		r.thr_bonus,
+		r.voucher_value
 	FROM request_mitra_offers o
 	JOIN customer_requests r ON r.id = o.request_id
 	JOIN users c ON c.id = r.customer_id
@@ -443,7 +442,7 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 	`, o.OfferID)
 	if res.RowsAffected == 0 {
 		tx.Rollback()
-		return errors.New("Maaf, waktu penawaran sudah habis atau sudah diambil dokter lain")
+		return errors.New("Maaf, waktu penawaran sudah habis")
 	}
 
 	// 2️⃣ Cancel other offers
@@ -494,6 +493,9 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 
 			price,
 			voucher_id,
+			platform_fee,
+			thr_bonus,
+			voucher_value,
 
 			status_id,
 			start_time,
@@ -506,7 +508,7 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 			?, ?, ?, ?,
 			?, ?, ?,
 			?, ?, ?, ?,
-			?, ?,
+			?, ?, ?, ?, ?,
 			1,
 			NOW(), NOW(), NOW(), NOW()
 		)
@@ -532,6 +534,9 @@ func (r *Repository) AcceptOfferAndCreateOrder(
 
 		o.Price,
 		o.VoucherID,
+		o.PlatformFee,
+		o.THRBonus,
+		o.VoucherValue,
 	).Row().Scan(&orderID, &createdAt); err != nil {
 		tx.Rollback()
 		return err
@@ -689,13 +694,14 @@ func (r *Repository) CompleteOrder(
 		customer_name,
 		mitra_id,
 		mitra_name,
-		amount,
-		subtotal,
-		discount,
 		platform_fee,
 		mitra_income,
 		payment_method,
 		voucher_id,
+		voucher_value,
+		thr_bonus,
+		order_number,
+		completed_at,
 		note,
 		status_id,
 		paid_at,
@@ -708,16 +714,20 @@ func (r *Repository) CompleteOrder(
 		so.customer_name,
 		so.mitra_id,
 		so.mitra_name,
-		?, ?, ?, ?, ?, ?, so.voucher_id, ?, 2, ?, ?, ?
+		so.platform_fee, 
+		so.price, -- mitra_income
+		'wallet', 
+		so.voucher_id, 
+		so.voucher_value, 
+		so.thr_bonus, 
+		so.order_number, 
+		NOW(), 
+		?, 
+		1, 
+		?, ?, ?
 	FROM service_orders so
 	WHERE so.id = ?
 `,
-		data.Amount,
-		data.Subtotal,
-		data.Discount,
-		data.PlatformFee,
-		data.MitraIncome,
-		data.PaymentMethod,
 		data.Note, // note dokter
 		now,
 		now,
@@ -1125,9 +1135,8 @@ func (r *Repository) DeductCustomerBalance(
 	ctx context.Context,
 	customerID int64,
 	orderID int64,
-	amount float64,
 ) error {
-	log.Printf("[DeductCustomerBalance] Starting for customerID: %d, orderID: %d, amount: %.2f", customerID, orderID, amount)
+	log.Printf("[DeductCustomerBalance] Starting for customerID: %d, orderID: %d", customerID, orderID)
 
 	tx := r.DB.WithContext(ctx).Begin()
 	defer func() {
@@ -1137,18 +1146,24 @@ func (r *Repository) DeductCustomerBalance(
 		}
 	}()
 
-	// 1. Get latest balance from saldo_role_transactions (Role ID 1 = Customer)
-	var latestSaldo int64
+	// 1. Get order info and amount
 	var orderNo string
+	var amount float64
 
-	// Ambil order_number untuk transaction_no
-	err := tx.Raw(`SELECT order_number FROM myschema.service_orders WHERE id = ?`, orderID).Scan(&orderNo).Error
-	if err != nil {
-		log.Printf("[DeductCustomerBalance] Error fetching order_number: %v", err)
+	var err error
+	if err = tx.Raw(`
+		SELECT order_number, (mitra_income + platform_fee + thr_bonus - voucher_value) 
+		FROM myschema.order_transactions 
+		WHERE order_id = ?
+	`, orderID).Row().Scan(&orderNo, &amount); err != nil {
+		log.Printf("[DeductCustomerBalance] Error fetching order info: %v", err)
 		tx.Rollback()
 		return err
 	}
-	log.Printf("[DeductCustomerBalance] Order number: %s", orderNo)
+	log.Printf("[DeductCustomerBalance] Order number: %s, Amount: %.2f", orderNo, amount)
+
+	// 2. Get latest balance from saldo_role_transactions (Role ID 1 = Customer)
+	var latestSaldo int64
 
 	// Lock row terakhir balance user tersebut untuk menghindari race condition
 	err = tx.Raw(`
@@ -1601,4 +1616,31 @@ func (r *Repository) UpdateOrderLocation(ctx context.Context, orderID int64, lat
 		SET mitra_latitude = ?, mitra_longitude = ?, updated_at = NOW() 
 		WHERE id = ?
 	`, lat, lng, orderID).Error
+}
+
+// GetExpiredOrdersToComplete finds orders that Mitra has COMPLETED (status 4) but Customer hasn't acted upon
+func (r *Repository) GetExpiredOrdersToComplete(ctx context.Context, timeoutMinutes float64) ([]struct {
+	OrderID    int64
+	CustomerID int64
+	Amount     float64
+}, error) {
+	var results []struct {
+		OrderID    int64
+		CustomerID int64
+		Amount     float64
+	}
+
+	query := `
+		SELECT 
+			ot.order_id, 
+			ot.customer_id, 
+			(ot.mitra_income + ot.platform_fee + ot.thr_bonus - ot.voucher_value) as amount
+		FROM order_transactions ot
+		JOIN service_orders so ON so.id = ot.order_id
+		WHERE so.status_id = 4
+		  AND so.end_time + (? * interval '1 minute') < NOW()
+		  AND ot.status_id = 1 -- PENDING
+	`
+	err := r.DB.WithContext(ctx).Raw(query, timeoutMinutes).Scan(&results).Error
+	return results, err
 }

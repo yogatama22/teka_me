@@ -332,19 +332,12 @@ func (h *Handler) CompleteOrderUser(c *fiber.Ctx) error {
 	}
 	customerID := int64(userIDVal.(uint))
 
-	var req models.CompleteOrderRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
-	}
-	req.OrderID = int64(orderID)
-
-	// Note: Customer completion usually doesn't involve uploading photos like Mitra does.
-	// So we skip the multipart form parsing here.
-
+	// Customer completion only triggers status update and balance deduction.
+	// No request body is needed.
 	if err := h.Service.CompleteOrderUser(
 		c.Context(),
 		customerID,
-		&req,
+		&models.CompleteOrderRequest{OrderID: int64(orderID)},
 	); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -115,6 +115,9 @@ func (s *Service) SearchDoctor(
 			Radius:           req.Radius,
 			Price:            req.Price,
 			VoucherID:        voucherID,
+			VoucherValue:     &req.VoucherValue,
+			PlatformFee:      req.PlatformFee,
+			THRBonus:         req.THRBonus,
 		},
 	)
 	if err != nil {
@@ -273,25 +276,12 @@ func (s *Service) CompleteOrder(
 	mitraID int64,
 	req *models.CompleteOrderRequest,
 ) error {
-
-	if req.Subtotal <= 0 {
-		return errors.New("invalid subtotal")
-	}
-
-	amount := req.Subtotal - req.Discount
-
 	data := CompleteOrderTxData{
-		Amount:        amount,
-		Subtotal:      req.Subtotal,
-		Discount:      req.Discount,
-		PlatformFee:   req.PlatformFee,
-		MitraIncome:   amount - req.PlatformFee,
-		PaymentMethod: req.PaymentMethod,
-		Note:          req.Note,
-		Attachments:   req.Attachments,
+		Note:        req.Note,
+		Attachments: req.Attachments,
 	}
 
-	// 1️⃣ Complete order (DB transaction) — BIARIN
+	// 1️⃣ Complete order (DB transaction)
 	if err := s.Repo.CompleteOrder(ctx, req.OrderID, mitraID, data); err != nil {
 		return err
 	}
@@ -311,18 +301,13 @@ func (s *Service) CompleteOrderUser(
 	req *models.CompleteOrderRequest,
 ) error {
 
-	if req.Subtotal <= 0 {
-		return errors.New("invalid subtotal")
-	}
-
-	amount := req.Subtotal - req.Discount
-
 	// 1️⃣ Complete order & Potong Saldo (Atomic)
 	// - Cek saldo di saldo_role_transactions
 	// - Insert mutasi saldo baru
 	// - Update status order_transactions jadi Paid
 	// - Update status service_orders jadi 6 (Finished)
-	if err := s.Repo.DeductCustomerBalance(ctx, customerID, req.OrderID, amount); err != nil {
+	// - Nilai amount diambil otomatis dari service_orders (price + platform_fee + thr_bonus - voucher_value)
+	if err := s.Repo.DeductCustomerBalance(ctx, customerID, req.OrderID); err != nil {
 		return err
 	}
 
@@ -423,8 +408,17 @@ func (s *Service) RunOfferTimeoutWorker(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			// Ambil penawaran yang sudah 60 detik (1 menit) belum direspon
-			offers, err := s.Repo.GetExpiredOffers(ctx, 60)
+			// 1. Ambil timeout dari global parameter (default 60)
+			timeoutSeconds := 60
+			val, err := s.Repo.GetGlobalParameter(ctx, "OFFER_TIMEOUT_SECONDS")
+			if err == nil && val != "" {
+				if t, err := strconv.Atoi(val); err == nil {
+					timeoutSeconds = t
+				}
+			}
+
+			// 2. Ambil penawaran yang sudah expired
+			offers, err := s.Repo.GetExpiredOffers(ctx, timeoutSeconds)
 			if err != nil {
 				log.Println("❌ timeout worker error:", err)
 				continue
@@ -605,4 +599,58 @@ func (s *Service) UpdateServiceOrderStatus(
 	}
 
 	return nil
+}
+
+// RunAutoOrderCompletionWorker periodically completes orders not confirmed by customers
+func (s *Service) RunAutoOrderCompletionWorker(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute) // cek tiap 5 menit
+	defer ticker.Stop()
+
+	log.Println("👷 Auto Order Completion Worker started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// 1. Ambil timeout dari global parameter (default 60 menit)
+			timeoutMinutes := 60.0
+			val, err := s.Repo.GetGlobalParameter(ctx, "ORDER_AUTO_COMPLETE_DURATION")
+			if err == nil && val != "" {
+				// Coba parse sebagai float dulu (anggap menit)
+				if t, err := strconv.ParseFloat(val, 64); err == nil {
+					timeoutMinutes = t
+				} else {
+					// Jika gagal, coba parse pakai format Go duration (1h, 30m, dll)
+					if dur, err := time.ParseDuration(val); err == nil {
+						timeoutMinutes = dur.Minutes()
+					}
+				}
+			}
+
+			// 2. Ambil order yang sudah waktunya auto-complete
+			orders, err := s.Repo.GetExpiredOrdersToComplete(ctx, timeoutMinutes)
+			if err != nil {
+				log.Println("❌ auto-complete worker error:", err)
+				continue
+			}
+
+			if len(orders) > 0 {
+				log.Printf("🔍 Auto-complete worker found %d orders to process", len(orders))
+			}
+
+			for _, order := range orders {
+				log.Printf("🤖 Auto-completing order %d for customer %d...", order.OrderID, order.CustomerID)
+
+				// Re-use existing completion logic: Deduct balance & Update status to 6
+				err := s.Repo.DeductCustomerBalance(ctx, order.CustomerID, order.OrderID)
+				if err != nil {
+					log.Printf("❌ Failed to auto-complete order %d: %v", order.OrderID, err)
+					continue
+				}
+
+				log.Printf("✅ Order %d auto-completed successfully", order.OrderID)
+			}
+		}
+	}
 }

@@ -114,6 +114,7 @@ func main() {
 
 	// 🔥 START DISPATCH WORKER
 	go dokterService.RunOfferTimeoutWorker(context.Background())
+	go dokterService.RunAutoOrderCompletionWorker(context.Background())
 
 	// Healthcheck
 	app.Get("/kaithheathcheck", func(c *fiber.Ctx) error {

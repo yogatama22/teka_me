@@ -9,15 +9,12 @@ type SearchDoctorRequest struct {
 	Radius           float64 `json:"radius"`
 	Price            float64 `json:"price"`
 	VoucherID        int64   `json:"voucher_id"`
+	VoucherValue     float64 `json:"voucher_value"`
+	PlatformFee      float64 `json:"platform_fee"`
+	THRBonus         float64 `json:"thr_bonus"`
 }
 
 type CompleteOrderTxData struct {
-	Amount        float64
-	Subtotal      float64
-	Discount      float64
-	PlatformFee   float64
-	MitraIncome   float64
-	PaymentMethod string
-	Note          string
-	Attachments   []string
+	Note        string
+	Attachments []string
 }
