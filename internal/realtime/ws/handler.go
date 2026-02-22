@@ -42,9 +42,53 @@ func WebSocketHandler(c *websocket.Conn) {
 		log.Println("WebSocket disconnected (Order):", orderID)
 	}()
 
+	var lastSave time.Time
+
 	for {
-		if _, _, err := c.ReadMessage(); err != nil {
+		_, msg, err := c.ReadMessage()
+		if err != nil {
 			break
+		}
+
+		// Parse message as LocationUpdate
+		var loc models.LocationUpdate
+		if err := json.Unmarshal(msg, &loc); err == nil && loc.Type == "location_update" {
+			log.Printf("📍 Location update for order %s: lat=%f, lng=%f\n", orderID, loc.Lat, loc.Lng)
+
+			// Broadcast to all clients in the order (e.g. customer)
+			BroadcastLocation(orderID, loc)
+
+			// 🕒 Periodically update the database (e.g. every 10 seconds)
+			if time.Since(lastSave) > 10*time.Second {
+				orderIDInt, _ := strconv.ParseInt(orderID, 10, 64)
+				go func(id int64, lat, lng float64) {
+					err := database.DB.Exec(`
+						UPDATE service_orders 
+						SET mitra_latitude = ?, mitra_longitude = ?, updated_at = NOW() 
+						WHERE id = ?
+					`, lat, lng, id).Error
+					if err != nil {
+						log.Printf("❌ Error updating DB location: %v\n", err)
+					}
+				}(orderIDInt, loc.Lat, loc.Lng)
+				lastSave = time.Now()
+			}
+		}
+	}
+}
+
+// BroadcastLocation sends location update to all clients in the order
+func BroadcastLocation(orderID string, loc models.LocationUpdate) {
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
+
+	if clients, ok := OrderClients[orderID]; ok {
+		for conn := range clients {
+			if err := conn.WriteJSON(loc); err != nil {
+				log.Printf("❌ Error sending location to client: %v", err)
+				conn.Close()
+				// We don't delete from map here because it would cause issues during iteration
+			}
 		}
 	}
 }
