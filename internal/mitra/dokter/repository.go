@@ -589,7 +589,7 @@ func (r *Repository) GetActiveServiceOrderForCustomer(
 	JOIN service_order_statuses sos 
 		ON sos.id = so.status_id
 	WHERE so.customer_id = ?
-	  AND so.status_id NOT IN (5, 6)
+	  AND so.status_id NOT IN (4,5,6)
 	LIMIT 1
 `, customerID).Scan(&row).Error
 
@@ -631,7 +631,7 @@ func (r *Repository) GetActiveServiceOrderForMitra(
 	JOIN service_order_statuses sos 
 		ON sos.id = so.status_id
 	WHERE so.mitra_id = ?
-	  AND so.status_id NOT IN (5, 6)
+	  AND so.status_id NOT IN (4,5,6)
 	LIMIT 1
 `, mitraID).Scan(&row).Error
 
