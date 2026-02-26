@@ -19,8 +19,8 @@ func AuthRoutes(app *fiber.App) {
 		return c.JSON(fiber.Map{
 			"version":    "v1.0.1",
 			"service":    "teka-api",
-			"tanggal":    "22-02-2026",
-			"keterangan": "update realtime location",
+			"tanggal":    "26-02-2026",
+			"keterangan": "update fcm",
 		})
 	})
 
