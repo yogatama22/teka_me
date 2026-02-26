@@ -212,6 +212,7 @@ type CancelRequest struct {
 
 type ActiveServiceOrder struct {
 	ID          int64        `json:"id"`
+	RequestID   int64        `json:"request_id"`
 	StartTime   time.Time    `json:"start_time"`
 	StatusID    int16        `json:"status_id"`
 	StatusName  string       `json:"code"`

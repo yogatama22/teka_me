@@ -4,6 +4,7 @@ import "time"
 
 type activeServiceOrderRow struct {
 	ID          int64
+	RequestID   int64
 	StartTime   time.Time
 	StatusID    int16
 	StatusName  string

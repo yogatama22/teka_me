@@ -5,6 +5,7 @@ import "teka-api/internal/models"
 func mapActiveServiceOrder(row activeServiceOrderRow) *models.ActiveServiceOrder {
 	return &models.ActiveServiceOrder{
 		ID:          row.ID,
+		RequestID:   row.RequestID,
 		StartTime:   row.StartTime,
 		StatusID:    row.StatusID,
 		StatusName:  row.StatusName,

@@ -569,6 +569,7 @@ func (r *Repository) GetActiveServiceOrderForCustomer(
 	err := r.DB.WithContext(ctx).Raw(`
 	SELECT
 		so.id,
+		so.request_id,
 		so.start_time,
 		so.status_id,
 		so.order_number,
@@ -611,6 +612,7 @@ func (r *Repository) GetActiveServiceOrderForMitra(
 	err := r.DB.WithContext(ctx).Raw(`
 	SELECT
 		so.id,
+		so.request_id,
 		so.start_time,
 		so.status_id,
 		so.order_number,
