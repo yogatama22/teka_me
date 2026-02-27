@@ -79,41 +79,13 @@ func PhoneExists(phone string) bool {
 func SaveFCMToken(userID uint, fcmToken, deviceName, deviceID string) error {
 	now := time.Now()
 
-	// 1. Hapus token ini dari user lain (mencegah token digunakan oleh user yang berbeda)
+	// 1. Hapus token ini dari user lain (mencegah token digunakan oleh user yang berbeda di device yang sama)
 	database.DB.Exec("DELETE FROM user_fcm_tokens WHERE fcm_token = ? AND user_id != ?", fcmToken, userID)
 
-	// Jika deviceID diberikan, hapus deviceID ini dari user lain
-	if deviceID != "" {
-		database.DB.Exec("DELETE FROM user_fcm_tokens WHERE device_id = ? AND user_id != ?", deviceID, userID)
-	}
+	// 2. Bersihkan SEMUA token lama milik user ini (ensuring single device)
+	database.DB.Exec("DELETE FROM user_fcm_tokens WHERE user_id = ?", userID)
 
-	// 2. Cek apakah perangkat/token ini sudah ada untuk user saat ini
-	var existing struct {
-		ID uint
-	}
-
-	query := database.DB.Table("user_fcm_tokens").Where("user_id = ?", userID)
-	if deviceID != "" {
-		query = query.Where("device_id = ?", deviceID)
-	} else {
-		query = query.Where("fcm_token = ?", fcmToken)
-	}
-
-	err := query.First(&existing).Error
-
-	if err == nil {
-		// update record yang sudah ada
-		return database.DB.Table("user_fcm_tokens").
-			Where("id = ?", existing.ID).
-			Updates(map[string]interface{}{
-				"fcm_token":   fcmToken,
-				"device_name": deviceName,
-				"device_id":   deviceID,
-				"updated_at":  now,
-			}).Error
-	}
-
-	// 3. Masukkan record baru untuk perangkat baru milik user ini
+	// 3. Masukkan record baru
 	return database.DB.Table("user_fcm_tokens").
 		Create(map[string]interface{}{
 			"user_id":     userID,

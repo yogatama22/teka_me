@@ -17,7 +17,7 @@ func InitFirebase() {
 	// Since the app runs from root, the path should be relative to root or absolute.
 	// We will move the json file to internal/realtime/firebase/
 	// so the path from root is internal/realtime/firebase/teka-pro-firebase-adminsdk-fbsvc-c424882af5.json
-	opt := option.WithCredentialsFile("internal/realtime/firebase/teka-pro-firebase-adminsdk-fbsvc-c424882af5.json")
+	opt := option.WithCredentialsFile("internal/realtime/firebase/teka-pro-firebase-adminsdk-fbsvc-1c6ec4cb07.json")
 	app, err := firebase.NewApp(context.Background(), nil, opt)
 	if err != nil {
 		log.Fatalf("error initializing firebase app: %v", err)

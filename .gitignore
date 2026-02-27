@@ -57,3 +57,8 @@ coverage/
 # ======================
 *.db
 *.sqlite
+
+# ======================
+# Firebase service account keys (secrets!)
+# ======================
+internal/realtime/firebase/*-adminsdk-*.json
